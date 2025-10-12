@@ -1,6 +1,7 @@
 import math
 import os
 import time
+import traceback
 
 import meshtastic.serial_interface
 import metpy.calc as mpcalc
@@ -16,6 +17,8 @@ from db import NodeDB
 from scheduled_worker import ScheduledWorker
 
 CONFIG_FILE = "config.yml"
+MAX_RETRIES = 10
+RETRY_BASE_DELAY = 5
 
 
 class Meshy:
@@ -29,13 +32,7 @@ class Meshy:
             self.db = NodeDB()
 
     def start(self):
-        logger.info(
-            f"Connecting to Meshtastic device via '{self.config['serial_port']}'."
-        )
-        pub.subscribe(self.on_connection, "meshtastic.connection.established")
-        interface = meshtastic.serial_interface.SerialInterface(
-            self.config["serial_port"]
-        )
+        interface = self.connect_and_run()
 
         try:
             while True:
@@ -46,6 +43,34 @@ class Meshy:
             for worker_job in self.worker_jobs:
                 worker_job.stop()
             interface.close()
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            interface.close()
+            interface = self.connect_and_run()
+
+    def connect_and_run(self):
+        attempt = 0
+        while True:
+            try:
+                logger.info(
+                    f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
+                )
+                interface = meshtastic.serial_interface.SerialInterface(
+                    self.config["serial_port"]
+                )
+                logger.info("Connected to node.")
+
+                pub.subscribe(self.on_receive, "meshtastic.receive")
+                pub.subscribe(self.on_connection, "meshtastic.connection.established")
+
+                return interface
+
+            except Exception as e:
+                delay = min(RETRY_BASE_DELAY * (2**attempt), 300)
+                logger.error(f"Connection failed ({e}). Retrying in {delay} seconds...")
+                traceback.print_exc()
+                time.sleep(delay)
+                attempt = min(attempt + 1, MAX_RETRIES)
 
     def load_config(self):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -223,10 +248,6 @@ class Meshy:
         }
 
     def on_connection(self, interface):
-        logger.info("Serial connected!")
-
-        pub.subscribe(self.on_receive, "meshtastic.receive")
-
         self.start_jobs(interface)
 
     def start_jobs(self, interface):
