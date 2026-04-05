@@ -1,4 +1,5 @@
 meshtastic
+meshcore
 metpy
 protobuf
 PyYAML
