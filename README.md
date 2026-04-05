@@ -1,12 +1,12 @@
 <img src="./logo.png" alt="Meshy Logo" width="400" height="auto">
 
-Meshy is a Meshtastic/LoRa-based bot for scheduled interval workers with general messages, beaconing, weather condition reporting via Home Assistant connected sensors, NWS forecasts, and DM commands. Fully configurable to have as many or as few channel outputs of any type you'd like on a schedule.
+Meshy is a MeshCore/LoRa-based bot for scheduled interval workers with general messages, beaconing, weather condition reporting via Home Assistant connected sensors, NWS forecasts, and DM commands. Fully configurable to have as many or as few channel outputs of any type you'd like on a schedule.
 
 Also has support for commands which respond to DMs with a string or a function call. Optionally also keeps a SQLite DB of "seen" nodes for you to use in bot commands or interval workers.
 
 ## Requirements
 
-- A meshtastic device connected to the machine you intend to run the script on, with any required USB serial drivers pre-installed.
+- A MeshCore companion device connected to the machine you intend to run the script on, with any required USB serial drivers pre-installed.
 - Something unix-ish to run the script on (Linux, Mac OS etc). It might work in windows but ymmv.
 - Python 3 and Pip 3.
 - SQLite3 headers (generally `libsqlite3-dev`).
@@ -24,7 +24,7 @@ Also has support for commands which respond to DMs with a string or a function c
 
 ### Commands
 
-Meshy can be configured to respond to commands via Meshtastic DM. Here are the
+Meshy can be configured to respond to commands via MeshCore DM. Here are the
 out of box commands:
 
 - `.about`: Basic info about the bot
@@ -36,9 +36,7 @@ out of box commands:
 
 ## Security and privacy
 
-While Meshtastic uses encryption on private channels, public channels are unencrypted. A good best practice is to never send anything truly sensitive on any channel, but that's up to your personal level of privacy.
-
-This project is not affilated with Meshtastic®, nor endorsed by Meshtastic LLC.
+While MeshCore uses encryption on private channels, public channels are unencrypted. A good best practice is to never send anything truly sensitive on any channel, but that's up to your personal level of privacy.
 
 ## License
 

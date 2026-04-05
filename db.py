@@ -15,81 +15,68 @@ class NodeDB:
     def _init_db(self):
         conn = self._get_conn()
         c = conn.cursor()
-        c.execute(
-            """
+        c.execute("""
             CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
-                short_name TEXT,
-                long_name TEXT,
+                name TEXT,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """
-        )
+        """)
         conn.commit()
         conn.close()
 
-    def upsert_node(self, node_id, short_name, long_name):
-        last4 = node_id[-4:] if len(node_id) > 4 else node_id
+    def upsert_node(self, node_id, name):
+        conn = self._get_conn()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT name FROM nodes WHERE id = ?", (node_id,))
+            row = c.fetchone()
 
-        conn = sqlite3.connect(self.db_file)
-        c = conn.cursor()
-
-        c.execute("SELECT short_name, long_name FROM nodes WHERE id = ?", (last4,))
-        row = c.fetchone()
-
-        if row is None:
-            c.execute(
-                """
-                INSERT INTO nodes (id, short_name, long_name, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-                (last4, short_name, long_name, datetime.utcnow(), datetime.utcnow()),
-            )
-            logger.info(f"New node seen: {long_name}/{short_name} ({last4})")
-        else:
-            old_short, old_long = row
-            new_short = short_name if short_name else old_short
-            new_long = long_name if long_name else old_long
-
-            if new_short != old_short or new_long != old_long:
+            if row is None:
                 c.execute(
                     """
-                    UPDATE nodes
-                    SET short_name = ?, long_name = ?, last_seen = ?
-                    WHERE id = ?
+                    INSERT INTO nodes (id, name, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?)
                 """,
-                    (new_short, new_long, datetime.utcnow(), last4),
+                    (node_id, name, datetime.utcnow(), datetime.utcnow()),
                 )
-                logger.info(
-                    f"Updated node already seen: {new_long}/{new_short} ({last4})"
-                )
+                logger.info(f"New node seen: {name} ({node_id})")
             else:
-                c.execute(
-                    """
-                    UPDATE nodes
-                    SET last_seen = ?
-                    WHERE id = ?
-                """,
-                    (datetime.utcnow(), last4),
-                )
+                old_name = row[0]
+                new_name = name if name else old_name
 
-        conn.commit()
-        conn.close()
+                if new_name != old_name:
+                    c.execute(
+                        """
+                        UPDATE nodes
+                        SET name = ?, last_seen = ?
+                        WHERE id = ?
+                    """,
+                        (new_name, datetime.utcnow(), node_id),
+                    )
+                    logger.info(f"Updated node: {new_name} ({node_id})")
+                else:
+                    c.execute(
+                        """
+                        UPDATE nodes
+                        SET last_seen = ?
+                        WHERE id = ?
+                    """,
+                        (datetime.utcnow(), node_id),
+                    )
+
+            conn.commit()
+        finally:
+            conn.close()
 
     def get_seen_nodes(self):
         conn = self._get_conn()
-        c = conn.cursor()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT id, name FROM nodes ORDER BY last_seen DESC")
+            rows = c.fetchall()
+        finally:
+            conn.close()
 
-        c.execute("SELECT id, short_name, long_name FROM nodes ORDER BY last_seen DESC")
-        rows = c.fetchall()
-        conn.close()
-
-        return [
-            {
-                "id": row[0],
-                "short_name": row[1],
-                "long_name": row[2],
-            }
-            for row in rows
-        ]
+        return [{"id": row[0], "name": row[1]} for row in rows]

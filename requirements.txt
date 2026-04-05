@@ -1,8 +1,6 @@
-meshtastic
+meshcore
 metpy
-protobuf
 PyYAML
-pypubsub
 python-dotenv
 black
 loguru

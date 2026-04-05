@@ -1,17 +1,15 @@
+import asyncio
 import math
 import os
-import time
-import traceback
 
-import meshtastic.serial_interface
 import metpy.calc as mpcalc
 import numpy
 import requests
 import yaml
 from dotenv import load_dotenv
 from loguru import logger
+from meshcore import EventType, MeshCore
 from metpy.units import units
-from pubsub import pub
 
 from db import NodeDB
 from scheduled_worker import ScheduledWorker
@@ -27,110 +25,108 @@ class Meshy:
         load_dotenv()
         self.config = self.load_config()
         self.worker_jobs = []
+        self.mc = None
+        self.channel_map = {}
 
         if self.config["save_node_db"]:
             self.db = NodeDB()
+        else:
+            self.db = None
 
-    def start(self):
-        interface = self.connect_and_run()
+    async def start(self):
+        self.mc = await self.connect_and_run()
+        await self.build_channel_map()
+        self.start_jobs()
+        await self._send_connect_adverts()
 
         try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
+            await asyncio.sleep(float("inf"))
+        except (KeyboardInterrupt, asyncio.CancelledError):
             logger.info("Closing connection, shutting down.")
-
+        finally:
             for worker_job in self.worker_jobs:
                 worker_job.stop()
-            interface.close()
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            interface.close()
-            interface = self.connect_and_run()
+            await self.mc.disconnect()
 
-    def connect_and_run(self):
+    async def connect_and_run(self):
         attempt = 0
         while True:
             try:
                 logger.info(
                     f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
                 )
-                interface = meshtastic.serial_interface.SerialInterface(
-                    self.config["serial_port"]
+                mc = await MeshCore.create_serial(
+                    self.config["serial_port"], baudrate=115200
                 )
                 logger.info("Connected to node.")
 
-                pub.subscribe(self.on_receive, "meshtastic.receive")
-                pub.subscribe(self.on_connection, "meshtastic.connection.established")
+                mc.subscribe(EventType.CONTACT_MSG_RECV, self.on_receive)
 
-                return interface
+                if self.db is not None:
+                    mc.subscribe(EventType.NEW_CONTACT, self.observe_node)
+
+                await mc.start_auto_message_fetching()
+
+                return mc
 
             except Exception as e:
                 delay = min(RETRY_BASE_DELAY * (2**attempt), 300)
-                logger.error(f"Connection failed ({e}). Retrying in {delay} seconds...")
-                traceback.print_exc()
-                time.sleep(delay)
+                logger.exception(
+                    f"Connection failed ({e}). Retrying in {delay} seconds..."
+                )
+                await asyncio.sleep(delay)
                 attempt = min(attempt + 1, MAX_RETRIES)
 
     def load_config(self):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
 
-    def on_receive(self, packet, interface):
-        if self.db is not None:
-            self.observe_node(packet, interface)
-
+    async def on_receive(self, event):
         if self.config["bot"]["active"] is False:
             return
 
-        my_id = interface.myInfo.my_node_num
-        my_id_encoded = f"!{my_id:08x}"
-
         try:
-            decoded = packet.get("decoded", {})
-            from_id = packet.get("fromId")
-            to_id = packet.get("toId")
-
-            # only reply to DMs
-            if to_id != my_id_encoded or from_id == my_id_encoded:
-                return
-
-            text = decoded.get("text", "")
+            pubkey_prefix = event.payload.get("pubkey_prefix", "")
+            text = event.payload.get("text", "")
 
             if not text:
                 return
 
             cmd = text.strip().lower()
-            reply_text = self.handle_command(cmd)
+            reply_text = await self.handle_command(cmd)
+
             if reply_text is None:
                 logger.debug(
-                    f"<- Unrecognized command from {from_id} ({cmd}), ignoring."
+                    f"<- Unrecognized command from {pubkey_prefix} ({cmd}), ignoring."
                 )
                 return
 
-            logger.info(f"<- from {from_id}: {cmd}")
-            logger.info(f"-> to {from_id}: {reply_text}")
-            interface.sendText(reply_text, destinationId=from_id)
+            logger.info(f"<- from {pubkey_prefix}: {cmd}")
+            logger.info(f"-> to {pubkey_prefix}: {reply_text}")
+
+            contact = self.mc.get_contact_by_key_prefix(pubkey_prefix)
+            if contact:
+                await self.mc.commands.send_msg(contact, reply_text)
+            else:
+                logger.warning(
+                    f"Could not find contact for {pubkey_prefix}, cannot reply."
+                )
         except Exception as e:
             logger.error(f"Command error: {e}")
 
-    def observe_node(self, packet, interface):
+    async def observe_node(self, event):
         try:
-            from_id = packet.get("fromId", "unknown")
-            portnum = packet.get("decoded", {}).get("portnum")
+            contact = event.payload
+            public_key = contact.get("public_key", "")
+            name = contact.get("name", "")
+            node_id = public_key[:12] if public_key else ""
 
-            if portnum != "NODEINFO_APP":
-                return
-
-            node = interface.nodes.get(from_id)
-            if node and "user" in node and "longName" in node["user"]:
-                short_name = node["user"]["shortName"]
-                long_name = node["user"]["longName"]
-                self.db.upsert_node(from_id, short_name, long_name)
+            if node_id and name:
+                self.db.upsert_node(node_id, name)
         except Exception as e:
-            logger.error(f"Error decoding packet: {e}")
+            logger.error(f"Error observing node: {e}")
 
-    def handle_command(self, cmd):
+    async def handle_command(self, cmd):
         commands = self.config.get("bot", {}).get("commands", {})
         action = commands.get(cmd)
 
@@ -138,33 +134,60 @@ class Meshy:
             return None
 
         if isinstance(action, str) and hasattr(self, action):
-            method = getattr(self, action)
-            reply_text = method()
+            return await asyncio.to_thread(getattr(self, action))
+
+        return action
+
+    async def _send_connect_adverts(self):
+        for job in self.config.get("workers", []):
+            if job.get("type") == "advert" and job.get("active", True):
+                await self.get_advert_worker(job)
+
+    async def get_advert_worker(self, job):
+        result = await self.mc.commands.send_advert(flood=True)
+        if result.type != EventType.ERROR:
+            logger.info("-> Advert sent (flood)")
         else:
-            reply_text = action
+            logger.warning(f"Advert failed: {result.payload}")
 
-        return reply_text
+    def _resolve_channel(self, job):
+        channel_name = job.get("channel", "").lower()
+        channel_index = self.channel_map.get(channel_name)
+        if channel_index is None:
+            logger.warning(f"Channel '{channel_name}' not found on device, skipping.")
+        return channel_index
 
-    def get_beacon_worker(self, interface, job):
-        interface.sendText(job["text"], channelIndex=job["channel_index"])
-        logger.info(f"-> Beacon: '{job['text']}' on channel {job['channel_index']}")
+    async def get_beacon_worker(self, job):
+        channel_index = self._resolve_channel(job)
+        if channel_index is None:
+            return
+        await self.mc.commands.send_chan_msg(channel_index, job["text"])
+        logger.info(
+            f"-> Beacon: '{job['text']}' on channel '{job['channel']}' ({channel_index})"
+        )
 
-    def get_weather_conditions_worker(self, interface, job):
+    async def get_weather_conditions_worker(self, job):
+        channel_index = self._resolve_channel(job)
+        if channel_index is None:
+            return
         try:
-            msg = self.get_weather_conditions()
-            interface.sendText(msg, channelIndex=job["channel_index"])
+            msg = await asyncio.to_thread(self.get_weather_conditions)
+            await self.mc.commands.send_chan_msg(channel_index, msg)
             logger.info(
-                f"-> Weather conditions: '{msg}' on channel {job['channel_index']}"
+                f"-> Weather conditions: '{msg}' on channel '{job['channel']}' ({channel_index})"
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather conditions job request failed: {e}")
 
-    def get_weather_forecast_worker(self, interface, job):
+    async def get_weather_forecast_worker(self, job):
+        channel_index = self._resolve_channel(job)
+        if channel_index is None:
+            return
         try:
-            msg = self.get_weather_forecast()
-            interface.sendText(msg, channelIndex=job["channel_index"])
+            msg = await asyncio.to_thread(self.get_weather_forecast)
+            await self.mc.commands.send_chan_msg(channel_index, msg)
             logger.info(
-                f"-> Weather forecast: '{msg}' on channel {job['channel_index']}"
+                f"-> Weather forecast: '{msg}' on channel '{job['channel']}' ({channel_index})"
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather forecast job request failed: {e}")
@@ -180,7 +203,7 @@ class Meshy:
 
         # TODO make this useful
         n = seen_nodes[0]
-        return f"Most recently seen node:\n{n['long_name']} / {n['short_name']} / {n['id']}"
+        return f"Most recently seen node:\n{n['name']} ({n['id']})"
 
     def get_weather_forecast(self):
         weather_config = self.config.get("weather").get("forecast")
@@ -247,10 +270,20 @@ class Meshy:
             "unit": data["attributes"].get("unit_of_measurement"),
         }
 
-    def on_connection(self, interface):
-        self.start_jobs(interface)
+    async def build_channel_map(self):
+        self.channel_map = {}
+        for i in range(8):
+            result = await self.mc.commands.get_channel(i)
+            if result.type == EventType.CHANNEL_INFO:
+                name = result.payload.get("channel_name", "").strip().lower()
+                if name:
+                    self.channel_map[name] = i
+                    stripped = name.lstrip("#")
+                    if stripped != name:
+                        self.channel_map[stripped] = i
+        logger.info(f"Channel map: {self.channel_map}")
 
-    def start_jobs(self, interface):
+    def start_jobs(self):
         for job in self.config.get("workers", []):
             job_type = job.get("type")
 
@@ -258,18 +291,18 @@ class Meshy:
                 logger.info(f"Job inactive: {job_type}, skipping")
                 continue
 
-            worker = getattr(self, job.get("dispatch"))
+            worker = getattr(self, job.get("dispatch"), None)
 
             if worker:
                 cron = job.get("cron")
-                threaded_worker = ScheduledWorker(cron, worker, interface, job)
-                threaded_worker.start()
-                self.worker_jobs.append(threaded_worker)
-                logger.info(f"{job_type} job started in thread with schedule: {cron}")
+                scheduled_worker = ScheduledWorker(cron, worker, job)
+                scheduled_worker.start()
+                self.worker_jobs.append(scheduled_worker)
+                logger.info(f"{job_type} job started with schedule: {cron}")
             else:
-                logger.warning(f"Unknown job type: {job_type}")
+                logger.warning(f"Unknown job dispatch: {job.get('dispatch')}")
 
 
 if __name__ == "__main__":
     meshy = Meshy()
-    meshy.start()
+    asyncio.run(meshy.start())

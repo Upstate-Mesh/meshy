@@ -13,26 +13,30 @@ weather:
 bot:
   active: true
   commands:
-    .about: I'm a Meshtastic bot 🤖
+    .about: I'm a MeshCore bot 🤖
     .conditions: get_weather_conditions
     .forecast: get_weather_forecast
     .help: 'Available commands: .about .conditions .forecast .help .ping .seen'
     .ping: pong!
     .seen: get_seen_nodes
 workers:
+  - type: advert
+    active: true
+    cron: 0 */3 * * *
+    dispatch: get_advert_worker
   - type: beacon
     active: true
-    channel_index: 0
+    channel: public
     cron: 0 0,12 * * *
     dispatch: get_beacon_worker
     text: Come join our local Discord! https://www.example.com
   - type: weather_conditions
     active: false
-    channel_index: 0
+    channel: public
     cron: 0 * * * *
     dispatch: get_weather_conditions_worker
   - type: weather_forecast
     active: true
-    channel_index: 0
+    channel: public
     cron: 15 8,20 * * *
     dispatch: get_weather_forecast_worker

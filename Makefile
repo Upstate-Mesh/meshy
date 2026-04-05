@@ -1,7 +1,10 @@
-.PHONY: run format
+.PHONY: run format deps
+
+deps:
+	python3 -m pip install -r requirements.txt
 
 run:
-	python main.py
+	python3 main.py
 
 format:
 	black .

@@ -3,3 +3,4 @@ config.yml
 .env
 nodes.db
 __pycache__
+.venv
