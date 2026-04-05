@@ -12,6 +12,7 @@ weather:
     user_agent: (example.com, example@example.com)
 bot:
   active: true
+  auto_accept_contacts: true
   commands:
     .about: I'm a MeshCore bot 🤖
     .conditions: get_weather_conditions

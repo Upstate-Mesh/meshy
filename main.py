@@ -1,6 +1,7 @@
 import asyncio
 import math
 import os
+import time
 
 import metpy.calc as mpcalc
 import numpy
@@ -17,6 +18,23 @@ from scheduled_worker import ScheduledWorker
 CONFIG_FILE = "config.yml"
 MAX_RETRIES = 10
 RETRY_BASE_DELAY = 5
+MAX_MSG_LEN = 133
+
+
+def split_message(text):
+    if len(text) <= MAX_MSG_LEN:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= MAX_MSG_LEN:
+            chunks.append(text)
+            break
+        split_at = text.rfind(" ", 0, MAX_MSG_LEN)
+        if split_at == -1:
+            split_at = MAX_MSG_LEN
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip()
+    return chunks
 
 
 class Meshy:
@@ -35,6 +53,7 @@ class Meshy:
 
     async def start(self):
         self.mc = await self.connect_and_run()
+        await self.mc.ensure_contacts()
         await self.build_channel_map()
         self.start_jobs()
         await self._send_connect_adverts()
@@ -61,9 +80,11 @@ class Meshy:
                 logger.info("Connected to node.")
 
                 mc.subscribe(EventType.CONTACT_MSG_RECV, self.on_receive)
+                mc.subscribe(EventType.ADVERTISEMENT, self.on_advert_received)
 
                 if self.db is not None:
                     mc.subscribe(EventType.NEW_CONTACT, self.observe_node)
+                    mc.subscribe(EventType.ADVERTISEMENT, self.observe_node)
 
                 await mc.start_auto_message_fetching()
 
@@ -87,6 +108,7 @@ class Meshy:
 
         try:
             pubkey_prefix = event.payload.get("pubkey_prefix", "")
+            logger.debug(f"<- DM event from {pubkey_prefix}")
             text = event.payload.get("text", "")
 
             if not text:
@@ -106,7 +128,8 @@ class Meshy:
 
             contact = self.mc.get_contact_by_key_prefix(pubkey_prefix)
             if contact:
-                await self.mc.commands.send_msg(contact, reply_text)
+                for chunk in split_message(reply_text):
+                    await self.mc.commands.send_msg(contact, chunk)
             else:
                 logger.warning(
                     f"Could not find contact for {pubkey_prefix}, cannot reply."
@@ -114,15 +137,53 @@ class Meshy:
         except Exception as e:
             logger.error(f"Command error: {e}")
 
+    async def on_advert_received(self, event):
+        if not self.config.get("bot", {}).get("auto_accept_contacts", False):
+            return
+
+        try:
+            public_key = event.payload.get("public_key", "")
+            if not public_key:
+                return
+
+            if self.mc.get_contact_by_key_prefix(public_key[:12]):
+                return  # already a contact
+
+            contact = {
+                "public_key": public_key,
+                "type": 0,
+                "flags": 0,
+                "out_path": "",
+                "out_path_len": -1,
+                "out_path_hash_mode": -1,
+                "adv_name": f"Node_{public_key[:8]}",
+                "last_advert": int(time.time()),
+                "adv_lat": 0.0,
+                "adv_lon": 0.0,
+            }
+
+            result = await self.mc.commands.add_contact(contact)
+            if result.type == EventType.ERROR:
+                logger.warning(f"Failed to add contact {public_key[:12]}: {result.payload}")
+                return
+
+            logger.info(f"<- Accepted new contact: {public_key[:12]}")
+            await self.mc.commands.send_advert(flood=False)
+        except Exception as e:
+            logger.error(f"Error accepting contact: {e}")
+
     async def observe_node(self, event):
         try:
-            contact = event.payload
-            public_key = contact.get("public_key", "")
-            name = contact.get("name", "")
-            node_id = public_key[:12] if public_key else ""
+            public_key = event.payload.get("public_key", "")
+            if not public_key:
+                return
 
-            if node_id and name:
-                self.db.upsert_node(node_id, name)
+            node_id = public_key[:12]
+            name = event.payload.get("name", "")
+            if not name:
+                contact = self.mc.get_contact_by_key_prefix(node_id)
+                name = contact.get("name", "") if contact else ""
+            self.db.upsert_node(node_id, name)
         except Exception as e:
             logger.error(f"Error observing node: {e}")
 
@@ -185,7 +246,8 @@ class Meshy:
             return
         try:
             msg = await asyncio.to_thread(self.get_weather_forecast)
-            await self.mc.commands.send_chan_msg(channel_index, msg)
+            for chunk in split_message(msg):
+                await self.mc.commands.send_chan_msg(channel_index, chunk)
             logger.info(
                 f"-> Weather forecast: '{msg}' on channel '{job['channel']}' ({channel_index})"
             )
