@@ -48,7 +48,6 @@ class Meshy:
         await self.mc.ensure_contacts()
         await self.build_channel_map()
         self.start_jobs()
-        await self._send_connect_adverts()
 
         try:
             await asyncio.sleep(float("inf"))
@@ -186,15 +185,11 @@ class Meshy:
 
         return action
 
-    async def _send_connect_adverts(self):
-        for job in self.config.get("workers", []):
-            if job.get("type") == "advert" and job.get("active", True):
-                await self.get_advert_worker(job)
-
     async def get_advert_worker(self, job):
-        result = await self.mc.commands.send_advert(flood=True)
+        flood = job.get("flood", True)
+        result = await self.mc.commands.send_advert(flood=flood)
         if result.type != EventType.ERROR:
-            logger.info("-> Advert sent (flood)")
+            logger.info(f"-> Advert sent ({'flood' if flood else 'direct'})")
         else:
             logger.warning(f"Advert failed: {result.payload}")
 
@@ -247,12 +242,11 @@ class Meshy:
 
         seen_nodes = self.db.get_seen_nodes()
 
-        if len(seen_nodes) == 0:
+        if not seen_nodes:
             return "No nodes seen."
 
-        # TODO make this useful
-        n = seen_nodes[0]
-        return f"Most recently seen node:\n{n['name']} ({n['id']})"
+        labels = ", ".join(n["name"] or n["id"] for n in seen_nodes[:5])
+        return f"Recently seen: {labels}"
 
     def get_weather_forecast(self):
         weather_config = self.config.get("weather").get("forecast")

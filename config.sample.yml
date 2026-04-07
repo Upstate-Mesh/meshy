@@ -23,8 +23,14 @@ bot:
 workers:
   - type: advert
     active: true
+    cron: 0 * * * *
+    dispatch: get_advert_worker
+    flood: false
+  - type: advert
+    active: true
     cron: 0 */6 * * *
     dispatch: get_advert_worker
+    flood: true
   - type: beacon
     active: true
     channel: public
