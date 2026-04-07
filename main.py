@@ -1,6 +1,7 @@
 import asyncio
 import math
 import os
+import textwrap
 import time
 
 import metpy.calc as mpcalc
@@ -19,22 +20,13 @@ CONFIG_FILE = "config.yml"
 MAX_RETRIES = 10
 RETRY_BASE_DELAY = 5
 MAX_MSG_LEN = 133
+MAX_CHANNELS = 8
 
 
-def split_message(text):
-    if len(text) <= MAX_MSG_LEN:
-        return [text]
-    chunks = []
-    while text:
-        if len(text) <= MAX_MSG_LEN:
-            chunks.append(text)
-            break
-        split_at = text.rfind(" ", 0, MAX_MSG_LEN)
-        if split_at == -1:
-            split_at = MAX_MSG_LEN
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip()
-    return chunks
+def node_label(contact):
+    name = contact.get("adv_name", "") if contact else "unknown"
+    key = (contact.get("public_key", "") if contact else "unknown")[:12]
+    return f"{name} ({key})" if name else f"({key})"
 
 
 class Meshy:
@@ -80,7 +72,7 @@ class Meshy:
                 logger.info("Connected to node.")
 
                 mc.subscribe(EventType.CONTACT_MSG_RECV, self.on_receive)
-                mc.subscribe(EventType.ADVERTISEMENT, self.on_advert_received)
+                mc.subscribe(EventType.NEW_CONTACT, self.on_advert_received)
 
                 if self.db is not None:
                     mc.subscribe(EventType.NEW_CONTACT, self.observe_node)
@@ -89,7 +81,6 @@ class Meshy:
                 await mc.start_auto_message_fetching()
 
                 return mc
-
             except Exception as e:
                 delay = min(RETRY_BASE_DELAY * (2**attempt), 300)
                 logger.exception(
@@ -108,7 +99,10 @@ class Meshy:
 
         try:
             pubkey_prefix = event.payload.get("pubkey_prefix", "")
-            logger.debug(f"<- DM event from {pubkey_prefix}")
+            contact = self.mc.get_contact_by_key_prefix(pubkey_prefix)
+            label = node_label(contact) if contact else f"({pubkey_prefix})"
+
+            logger.debug(f"<- DM event from {label}")
             text = event.payload.get("text", "")
 
             if not text:
@@ -118,22 +112,17 @@ class Meshy:
             reply_text = await self.handle_command(cmd)
 
             if reply_text is None:
-                logger.debug(
-                    f"<- Unrecognized command from {pubkey_prefix} ({cmd}), ignoring."
-                )
+                logger.debug(f"<- Unrecognized command from {label} ({cmd}), ignoring.")
                 return
 
-            logger.info(f"<- from {pubkey_prefix}: {cmd}")
-            logger.info(f"-> to {pubkey_prefix}: {reply_text}")
+            logger.info(f"<- from {label}: {cmd}")
+            logger.info(f"-> to {label}: {reply_text}")
 
-            contact = self.mc.get_contact_by_key_prefix(pubkey_prefix)
             if contact:
-                for chunk in split_message(reply_text):
+                for chunk in textwrap.wrap(reply_text, width=MAX_MSG_LEN):
                     await self.mc.commands.send_msg(contact, chunk)
             else:
-                logger.warning(
-                    f"Could not find contact for {pubkey_prefix}, cannot reply."
-                )
+                logger.warning(f"Could not find contact for {label}, cannot reply.")
         except Exception as e:
             logger.error(f"Command error: {e}")
 
@@ -146,28 +135,26 @@ class Meshy:
             if not public_key:
                 return
 
+            # we already know them
             if self.mc.get_contact_by_key_prefix(public_key[:12]):
-                return  # already a contact
+                return
 
-            contact = {
-                "public_key": public_key,
-                "type": 0,
-                "flags": 0,
-                "out_path": "",
-                "out_path_len": -1,
-                "out_path_hash_mode": -1,
-                "adv_name": f"Node_{public_key[:8]}",
-                "last_advert": int(time.time()),
-                "adv_lat": 0.0,
-                "adv_lon": 0.0,
-            }
+            # payload has full contact info
+            contact = dict(event.payload)
+            out_path = contact.get("out_path", "")
+            contact["out_path_len"] = len(out_path)
 
             result = await self.mc.commands.add_contact(contact)
             if result.type == EventType.ERROR:
-                logger.warning(f"Failed to add contact {public_key[:12]}: {result.payload}")
+                logger.warning(
+                    f"Failed to add contact {node_label(contact)}: {result.payload}"
+                )
                 return
 
-            logger.info(f"<- Accepted new contact: {public_key[:12]}")
+            self.mc._contacts[public_key] = contact
+            logger.info(f"<- Accepted new contact: {node_label(contact)}")
+
+            # exchange our contact info in return to get a mutual handshake
             await self.mc.commands.send_advert(flood=False)
         except Exception as e:
             logger.error(f"Error accepting contact: {e}")
@@ -179,10 +166,10 @@ class Meshy:
                 return
 
             node_id = public_key[:12]
-            name = event.payload.get("name", "")
+            name = event.payload.get("adv_name", "")
             if not name:
                 contact = self.mc.get_contact_by_key_prefix(node_id)
-                name = contact.get("name", "") if contact else ""
+                name = contact.get("adv_name", "") if contact else ""
             self.db.upsert_node(node_id, name)
         except Exception as e:
             logger.error(f"Error observing node: {e}")
@@ -246,7 +233,7 @@ class Meshy:
             return
         try:
             msg = await asyncio.to_thread(self.get_weather_forecast)
-            for chunk in split_message(msg):
+            for chunk in textwrap.wrap(msg, width=MAX_MSG_LEN):
                 await self.mc.commands.send_chan_msg(channel_index, chunk)
             logger.info(
                 f"-> Weather forecast: '{msg}' on channel '{job['channel']}' ({channel_index})"
@@ -334,15 +321,17 @@ class Meshy:
 
     async def build_channel_map(self):
         self.channel_map = {}
-        for i in range(8):
+        for i in range(MAX_CHANNELS):
             result = await self.mc.commands.get_channel(i)
-            if result.type == EventType.CHANNEL_INFO:
-                name = result.payload.get("channel_name", "").strip().lower()
-                if name:
-                    self.channel_map[name] = i
-                    stripped = name.lstrip("#")
-                    if stripped != name:
-                        self.channel_map[stripped] = i
+            if result.type != EventType.CHANNEL_INFO:
+                continue
+            name = result.payload.get("channel_name", "").strip().lower()
+            if not name:
+                continue
+            self.channel_map[name] = i
+            stripped = name.lstrip("#")
+            if stripped != name:
+                self.channel_map[stripped] = i
         logger.info(f"Channel map: {self.channel_map}")
 
     def start_jobs(self):

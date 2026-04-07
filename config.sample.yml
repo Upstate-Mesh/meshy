@@ -23,7 +23,7 @@ bot:
 workers:
   - type: advert
     active: true
-    cron: 0 */3 * * *
+    cron: 0 */6 * * *
     dispatch: get_advert_worker
   - type: beacon
     active: true
