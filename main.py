@@ -20,6 +20,27 @@ MAX_RETRIES = 10
 RETRY_BASE_DELAY = 5
 MAX_MSG_LEN = 133
 MAX_CHANNELS = 8
+# Overhead per chunk when split: "..." prefix (3) + "... [xx/xx]" suffix (11)
+SPLIT_OVERHEAD = 14
+
+
+def split_message(text):
+    chunks = textwrap.wrap(text, width=MAX_MSG_LEN)
+    if len(chunks) == 1:
+        return chunks
+
+    chunks = textwrap.wrap(text, width=MAX_MSG_LEN - SPLIT_OVERHEAD)
+    n = len(chunks)
+    result = []
+    for i, chunk in enumerate(chunks):
+        label = f"[{i + 1}/{n}]"
+        if i == 0:
+            result.append(f"{chunk}... {label}")
+        elif i == n - 1:
+            result.append(f"...{chunk} {label}")
+        else:
+            result.append(f"...{chunk}... {label}")
+    return result
 
 
 def node_label(contact):
@@ -117,7 +138,7 @@ class Meshy:
             logger.info(f"-> to {label}: {reply_text}")
 
             if contact:
-                for chunk in textwrap.wrap(reply_text, width=MAX_MSG_LEN):
+                for chunk in split_message(reply_text):
                     await self.mc.commands.send_msg(contact, chunk)
             else:
                 logger.warning(f"Could not find contact for {label}, cannot reply.")
@@ -203,7 +224,7 @@ class Meshy:
         channel_index = self._resolve_channel(job)
         if channel_index is None:
             return
-        for chunk in textwrap.wrap(msg, width=MAX_MSG_LEN):
+        for chunk in split_message(msg):
             await self.mc.commands.send_chan_msg(channel_index, chunk)
         logger.info(f"-> '{msg}' on '{job['channel']}' ({channel_index})")
 
