@@ -2,7 +2,6 @@ import asyncio
 import math
 import os
 import textwrap
-import time
 
 import metpy.calc as mpcalc
 import numpy
@@ -200,41 +199,32 @@ class Meshy:
             logger.warning(f"Channel '{channel_name}' not found on device, skipping.")
         return channel_index
 
-    async def get_beacon_worker(self, job):
+    async def _send_channel_message(self, job, msg):
         channel_index = self._resolve_channel(job)
         if channel_index is None:
             return
-        await self.mc.commands.send_chan_msg(channel_index, job["text"])
-        logger.info(
-            f"-> Beacon: '{job['text']}' on channel '{job['channel']}' ({channel_index})"
-        )
+        for chunk in textwrap.wrap(msg, width=MAX_MSG_LEN):
+            await self.mc.commands.send_chan_msg(channel_index, chunk)
+        logger.info(f"-> '{msg}' on '{job['channel']}' ({channel_index})")
+
+    async def get_beacon_worker(self, job):
+        await self._send_channel_message(job, job["text"])
 
     async def get_weather_conditions_worker(self, job):
-        channel_index = self._resolve_channel(job)
-        if channel_index is None:
-            return
         try:
-            msg = await asyncio.to_thread(self.get_weather_conditions)
-            await self.mc.commands.send_chan_msg(channel_index, msg)
-            logger.info(
-                f"-> Weather conditions: '{msg}' on channel '{job['channel']}' ({channel_index})"
+            await self._send_channel_message(
+                job, await asyncio.to_thread(self.get_weather_conditions)
             )
         except requests.exceptions.RequestException as e:
-            logger.info(f"Weather conditions job request failed: {e}")
+            logger.info(f"Weather conditions request failed: {e}")
 
     async def get_weather_forecast_worker(self, job):
-        channel_index = self._resolve_channel(job)
-        if channel_index is None:
-            return
         try:
-            msg = await asyncio.to_thread(self.get_weather_forecast)
-            for chunk in textwrap.wrap(msg, width=MAX_MSG_LEN):
-                await self.mc.commands.send_chan_msg(channel_index, chunk)
-            logger.info(
-                f"-> Weather forecast: '{msg}' on channel '{job['channel']}' ({channel_index})"
+            await self._send_channel_message(
+                job, await asyncio.to_thread(self.get_weather_forecast)
             )
         except requests.exceptions.RequestException as e:
-            logger.info(f"Weather forecast job request failed: {e}")
+            logger.info(f"Weather forecast request failed: {e}")
 
     def get_seen_nodes(self):
         if self.db is None:
