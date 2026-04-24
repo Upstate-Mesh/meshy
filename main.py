@@ -1,16 +1,12 @@
 import asyncio
-import math
 import os
 import textwrap
 
-import metpy.calc as mpcalc
-import numpy
 import requests
 import yaml
 from dotenv import load_dotenv
 from loguru import logger
 from meshcore import EventType, MeshCore
-from metpy.units import units
 
 from db import NodeDB
 from scheduled_worker import ScheduledWorker
@@ -186,10 +182,16 @@ class Meshy:
 
             node_id = public_key[:12]
             name = event.payload.get("adv_name", "")
-            if not name:
+            lat = event.payload.get("adv_lat")
+            lon = event.payload.get("adv_lon")
+            if not name or lat is None:
+                await self.mc.ensure_contacts(follow=True)
                 contact = self.mc.get_contact_by_key_prefix(node_id)
-                name = contact.get("adv_name", "") if contact else ""
-            self.db.upsert_node(node_id, name)
+                if contact:
+                    name = name or contact.get("adv_name", "")
+                    lat = lat if lat is not None else contact.get("adv_lat")
+                    lon = lon if lon is not None else contact.get("adv_lon")
+            self.db.upsert_node(node_id, name, lat, lon)
         except Exception as e:
             logger.error(f"Error observing node: {e}")
 
@@ -247,6 +249,49 @@ class Meshy:
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather forecast request failed: {e}")
 
+    async def get_aircraft_worker(self, job):
+        try:
+            await self._send_channel_message(
+                job, await asyncio.to_thread(self.get_aircraft, job)
+            )
+        except requests.exceptions.RequestException as e:
+            logger.info(f"Aircraft request failed: {e}")
+
+    def get_aircraft(self, job):
+        adsb_config = self.config.get("adsb", {})
+        url = adsb_config.get("url", "http://localhost:8080")
+        max_age = job.get("max_age_seconds", adsb_config.get("max_age_seconds", 60))
+        max_count = job.get("max_count", adsb_config.get("max_count", 5))
+
+        response = requests.get(f"{url}/data/aircraft.json", timeout=5)
+        response.raise_for_status()
+        aircraft = response.json().get("aircraft", [])
+
+        recent = sorted(
+            [a for a in aircraft if a.get("seen", 999) <= max_age],
+            key=lambda a: a.get("seen", 999),
+        )[:max_count]
+
+        if not recent:
+            return "No aircraft currently seen."
+
+        labels = []
+        for a in recent:
+            callsign = a.get("flight", "").strip() or a.get("hex", "???").upper()
+            alt = a.get("alt_baro")
+            speed = a.get("gs")
+
+            parts = [callsign]
+            if alt is not None and alt != "ground":
+                alt = int(alt)
+                parts.append(f"FL{alt // 100}" if alt >= 18000 else f"{alt}ft")
+            if speed is not None:
+                parts.append(f"{int(speed)}kt")
+
+            labels.append(" ".join(parts))
+
+        return f"{len(recent)} aircraft: {', '.join(labels)}"
+
     def get_seen_nodes(self):
         if self.db is None:
             return "Command inactive."
@@ -292,19 +337,11 @@ class Meshy:
         temp_data = self.get_ha_sensor_state(ha_url, temp_entity_id)
         temp = round(float(temp_data["state"]))
         humidity_data = self.get_ha_sensor_state(ha_url, humidity_entity_id)
-        humidity = float(humidity_data["state"])
-        heat_index = mpcalc.heat_index(temp * units.degF, humidity * units.percent)
-
-        feels_like = temp
-        magnitude = heat_index.m
-
-        if not numpy.ma.is_masked(magnitude) and not math.isnan(float(magnitude)):
-            feels_like = round(float(magnitude))
+        humidity = round(float(humidity_data["state"]))
 
         return (
             f"Currently in {location_description}, {temp}{temp_data['unit']}. "
-            f"Feels like {feels_like}{temp_data['unit']}. "
-            f"Humidity {round(humidity)}{humidity_data['unit']}."
+            f"Humidity {humidity}{humidity_data['unit']}."
         )
 
     def get_ha_sensor_state(self, ha_base, entity_id):

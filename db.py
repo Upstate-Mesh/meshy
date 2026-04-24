@@ -19,14 +19,17 @@ class NodeDB:
             CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
                 name TEXT,
+                lat REAL,
+                lon REAL,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
         conn.commit()
         conn.close()
 
-    def upsert_node(self, node_id, name):
+    def upsert_node(self, node_id, name, lat=None, lon=None):
         conn = self._get_conn()
         try:
             c = conn.cursor()
@@ -36,10 +39,10 @@ class NodeDB:
             if row is None:
                 c.execute(
                     """
-                    INSERT INTO nodes (id, name, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO nodes (id, name, lat, lon, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                    (node_id, name, datetime.utcnow(), datetime.utcnow()),
+                    (node_id, name, lat, lon, datetime.utcnow(), datetime.utcnow()),
                 )
                 logger.info(f"New node seen: {name} ({node_id})")
             else:
@@ -47,24 +50,16 @@ class NodeDB:
                 new_name = name if name else old_name
 
                 if new_name != old_name:
-                    c.execute(
-                        """
-                        UPDATE nodes
-                        SET name = ?, last_seen = ?
-                        WHERE id = ?
-                    """,
-                        (new_name, datetime.utcnow(), node_id),
-                    )
                     logger.info(f"Updated node: {new_name} ({node_id})")
-                else:
-                    c.execute(
-                        """
-                        UPDATE nodes
-                        SET last_seen = ?
-                        WHERE id = ?
-                    """,
-                        (datetime.utcnow(), node_id),
-                    )
+
+                c.execute(
+                    """
+                    UPDATE nodes
+                    SET name = ?, lat = COALESCE(?, lat), lon = COALESCE(?, lon), last_seen = ?
+                    WHERE id = ?
+                """,
+                    (new_name, lat, lon, datetime.utcnow(), node_id),
+                )
 
             conn.commit()
         finally:
@@ -74,9 +69,11 @@ class NodeDB:
         conn = self._get_conn()
         try:
             c = conn.cursor()
-            c.execute("SELECT id, name FROM nodes ORDER BY last_seen DESC")
+            c.execute("SELECT id, name, lat, lon FROM nodes ORDER BY last_seen DESC")
             rows = c.fetchall()
         finally:
             conn.close()
 
-        return [{"id": row[0], "name": row[1]} for row in rows]
+        return [
+            {"id": row[0], "name": row[1], "lat": row[2], "lon": row[3]} for row in rows
+        ]

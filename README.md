@@ -4,6 +4,9 @@ Meshy is a MeshCore/LoRa-based bot for scheduled interval workers with general m
 
 Also has support for commands which respond to DMs with a string or a function call. Optionally also keeps a SQLite DB of "seen" nodes for you to use in bot commands or interval workers.
 
+## Release Notes
+- **2026-04-24:** Seen DB now keeps track of lat/long. Experimental ADSB reporting via dump1090.
+
 ## Requirements
 
 - A MeshCore companion device connected to the machine you intend to run the script on, with any required USB serial drivers pre-installed.
@@ -32,11 +35,15 @@ out of box commands:
 - `.forecast`: National Weather Service forecast for the latest period
 - `.help`: Lists available commands
 - `.ping`: Replies `pong!`
-- `.seen`: Most recently "seen" node (WIP)
+- `.seen`: Most recently "seen" nodes
 
 ## Security and privacy
 
 While MeshCore uses encryption on private channels, public channels are unencrypted. A good best practice is to never send anything truly sensitive on any channel, but that's up to your personal level of privacy.
+
+## Agentic Disclosure
+
+Portions of this repository have been aided in part, by Claude Code. No LLM authored code has been committed without rigorous manual review and adjustment by a software engineer.
 
 ## License
 
