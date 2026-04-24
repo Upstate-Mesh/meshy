@@ -43,7 +43,7 @@ While MeshCore uses encryption on private channels, public channels are unencryp
 
 ## Agentic Disclosure
 
-Portions of this repository have been aided in part, by Claude Code. No LLM authored code has been committed without rigorous manual review and adjustment by a software engineer.
+Portions of this repository have been aided in part, by Claude Code. No LLM authored code has been committed without rigorous manual review and adjustment by a human software engineer.
 
 ## License
 
