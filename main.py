@@ -252,16 +252,16 @@ class Meshy:
     async def get_aircraft_worker(self, job):
         try:
             await self._send_channel_message(
-                job, await asyncio.to_thread(self.get_aircraft, job)
+                job, await asyncio.to_thread(self.get_aircraft)
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Aircraft request failed: {e}")
 
-    def get_aircraft(self, job):
+    def get_aircraft(self):
         adsb_config = self.config.get("adsb", {})
         url = adsb_config.get("url", "http://localhost:8080")
-        max_age = job.get("max_age_seconds", adsb_config.get("max_age_seconds", 60))
-        max_count = job.get("max_count", adsb_config.get("max_count", 5))
+        max_age = adsb_config.get("max_age_seconds")
+        max_count = adsb_config.get("max_count", 5)
 
         response = requests.get(f"{url}/data/aircraft.json", timeout=5)
         response.raise_for_status()
@@ -285,12 +285,10 @@ class Meshy:
             if alt is not None and alt != "ground":
                 alt = int(alt)
                 parts.append(f"FL{alt // 100}" if alt >= 18000 else f"{alt}ft")
-            if speed is not None:
-                parts.append(f"{int(speed)}kt")
 
             labels.append(" ".join(parts))
 
-        return f"{len(recent)} aircraft: {', '.join(labels)}"
+        return f"✈️ spotted:\n{',\n'.join(labels)}"
 
     def get_seen_nodes(self):
         if self.db is None:

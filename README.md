@@ -5,6 +5,7 @@ Meshy is a MeshCore/LoRa-based bot for scheduled interval workers with general m
 Also has support for commands which respond to DMs with a string or a function call. Optionally also keeps a SQLite DB of "seen" nodes for you to use in bot commands or interval workers.
 
 ## Release Notes
+
 - **2026-04-24:** Seen DB now keeps track of lat/long. Experimental ADSB reporting via dump1090.
 
 ## Requirements
