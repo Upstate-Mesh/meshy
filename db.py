@@ -1,5 +1,10 @@
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
+
+
+def _now():
+    return datetime.now(UTC).isoformat()
+
 
 from loguru import logger
 
@@ -42,7 +47,7 @@ class NodeDB:
                     INSERT INTO nodes (id, name, lat, lon, first_seen, last_seen)
                     VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                    (node_id, name, lat, lon, datetime.utcnow(), datetime.utcnow()),
+                    (node_id, name, lat, lon, _now(), _now()),
                 )
                 logger.info(f"New node seen: {name} ({node_id})")
             else:
@@ -58,7 +63,7 @@ class NodeDB:
                     SET name = ?, lat = COALESCE(?, lat), lon = COALESCE(?, lon), last_seen = ?
                     WHERE id = ?
                 """,
-                    (new_name, lat, lon, datetime.utcnow(), node_id),
+                    (new_name, lat, lon, _now(), node_id),
                 )
 
             conn.commit()

@@ -1,6 +1,4 @@
 import asyncio
-import os
-import textwrap
 
 import requests
 import yaml
@@ -8,41 +6,16 @@ from dotenv import load_dotenv
 from loguru import logger
 from meshcore import EventType, MeshCore
 
+from adsb import AdsbService
 from db import NodeDB
 from scheduled_worker import ScheduledWorker
+from utils import node_label, split_message
+from weather import WeatherService
 
 CONFIG_FILE = "config.yml"
 MAX_RETRIES = 10
 RETRY_BASE_DELAY = 5
-MAX_MSG_LEN = 133
 MAX_CHANNELS = 8
-# Overhead per chunk when split: "..." prefix (3) + "... [xx/xx]" suffix (11)
-SPLIT_OVERHEAD = 14
-
-
-def split_message(text):
-    chunks = textwrap.wrap(text, width=MAX_MSG_LEN)
-    if len(chunks) == 1:
-        return chunks
-
-    chunks = textwrap.wrap(text, width=MAX_MSG_LEN - SPLIT_OVERHEAD)
-    n = len(chunks)
-    result = []
-    for i, chunk in enumerate(chunks):
-        label = f"[{i + 1}/{n}]"
-        if i == 0:
-            result.append(f"{chunk}... {label}")
-        elif i == n - 1:
-            result.append(f"...{chunk} {label}")
-        else:
-            result.append(f"...{chunk}... {label}")
-    return result
-
-
-def node_label(contact):
-    name = contact.get("adv_name", "") if contact else "unknown"
-    key = (contact.get("public_key", "") if contact else "unknown")[:12]
-    return f"{name} ({key})" if name else f"({key})"
 
 
 class Meshy:
@@ -53,6 +26,8 @@ class Meshy:
         self.worker_jobs = []
         self.mc = None
         self.channel_map = {}
+        self.weather = WeatherService(self.config)
+        self.adsb = AdsbService(self.config)
 
         if self.config["save_node_db"]:
             self.db = NodeDB()
@@ -207,6 +182,27 @@ class Meshy:
 
         return action
 
+    def get_weather_conditions(self):
+        return self.weather.get_conditions()
+
+    def get_weather_forecast(self):
+        return self.weather.get_forecast()
+
+    def get_aircraft(self):
+        return self.adsb.get_aircraft()
+
+    def get_seen_nodes(self):
+        if self.db is None:
+            return "Command inactive."
+
+        seen_nodes = self.db.get_seen_nodes()
+
+        if not seen_nodes:
+            return "No nodes seen."
+
+        labels = ", ".join(n["name"] or n["id"] for n in seen_nodes[:5])
+        return f"Recently seen: {labels}"
+
     async def get_advert_worker(self, job):
         flood = job.get("flood", True)
         result = await self.mc.commands.send_advert(flood=flood)
@@ -236,7 +232,7 @@ class Meshy:
     async def get_weather_conditions_worker(self, job):
         try:
             await self._send_channel_message(
-                job, await asyncio.to_thread(self.get_weather_conditions)
+                job, await asyncio.to_thread(self.weather.get_conditions)
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather conditions request failed: {e}")
@@ -244,7 +240,7 @@ class Meshy:
     async def get_weather_forecast_worker(self, job):
         try:
             await self._send_channel_message(
-                job, await asyncio.to_thread(self.get_weather_forecast)
+                job, await asyncio.to_thread(self.weather.get_forecast)
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather forecast request failed: {e}")
@@ -252,112 +248,10 @@ class Meshy:
     async def get_aircraft_worker(self, job):
         try:
             await self._send_channel_message(
-                job, await asyncio.to_thread(self.get_aircraft)
+                job, await asyncio.to_thread(self.adsb.get_aircraft)
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Aircraft request failed: {e}")
-
-    def get_aircraft(self):
-        adsb_config = self.config.get("adsb", {})
-        url = adsb_config.get("url", "http://localhost:8080")
-        max_age = adsb_config.get("max_age_seconds")
-        max_count = adsb_config.get("max_count", 5)
-
-        response = requests.get(f"{url}/data/aircraft.json", timeout=5)
-        response.raise_for_status()
-        aircraft = response.json().get("aircraft", [])
-
-        recent = sorted(
-            [a for a in aircraft if a.get("seen", 999) <= max_age],
-            key=lambda a: a.get("seen", 999),
-        )[:max_count]
-
-        if not recent:
-            return "No aircraft currently seen."
-
-        labels = []
-        for a in recent:
-            callsign = a.get("flight", "").strip() or a.get("hex", "???").upper()
-            alt = a.get("alt_baro")
-            speed = a.get("gs")
-
-            parts = [callsign]
-            if alt is not None and alt != "ground":
-                alt = int(alt)
-                parts.append(f"FL{alt // 100}" if alt >= 18000 else f"{alt}ft")
-
-            labels.append(" ".join(parts))
-
-        return f"✈️ spotted:\n{',\n'.join(labels)}"
-
-    def get_seen_nodes(self):
-        if self.db is None:
-            return "Command inactive."
-
-        seen_nodes = self.db.get_seen_nodes()
-
-        if not seen_nodes:
-            return "No nodes seen."
-
-        labels = ", ".join(n["name"] or n["id"] for n in seen_nodes[:5])
-        return f"Recently seen: {labels}"
-
-    def get_weather_forecast(self):
-        weather_config = self.config.get("weather").get("forecast")
-        url = weather_config.get("url")
-        user_agent = weather_config.get("user_agent")
-
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": user_agent,
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        periods = data.get("properties", {}).get("periods", [])
-        if len(periods) == 0:
-            return "Forecast unavailable."
-
-        period = periods[0]
-        name = period.get("name").lower()
-        detailed_forecast = period.get("detailedForecast")
-        return f"NWS forecast for {name}: {detailed_forecast}"
-
-    def get_weather_conditions(self):
-        conditions_config = self.config.get("weather").get("conditions")
-        temp_entity_id = conditions_config.get("temp_entity_id")
-        humidity_entity_id = conditions_config.get("humidity_entity_id")
-        location_description = conditions_config.get("location_description")
-        ha_url = conditions_config.get("url")
-
-        temp_data = self.get_ha_sensor_state(ha_url, temp_entity_id)
-        temp = round(float(temp_data["state"]))
-        humidity_data = self.get_ha_sensor_state(ha_url, humidity_entity_id)
-        humidity = round(float(humidity_data["state"]))
-
-        return (
-            f"Currently in {location_description}, {temp}{temp_data['unit']}. "
-            f"Humidity {humidity}{humidity_data['unit']}."
-        )
-
-    def get_ha_sensor_state(self, ha_base, entity_id):
-        ha_token = os.getenv("HA_TOKEN")
-
-        headers = {
-            "Authorization": f"Bearer {ha_token}",
-            "Content-Type": "application/json",
-        }
-        url = f"{ha_base}/api/states/{entity_id}"
-
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return {
-            "state": data.get("state"),
-            "unit": data["attributes"].get("unit_of_measurement"),
-        }
 
     async def build_channel_map(self):
         self.channel_map = {}

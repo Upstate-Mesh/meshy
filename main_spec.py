@@ -1,6 +1,8 @@
-import pytest
+from unittest.mock import MagicMock, patch
 
-from main import MAX_MSG_LEN, SPLIT_OVERHEAD, split_message
+from adsb import AdsbService
+from db import NodeDB
+from utils import MAX_MSG_LEN, SPLIT_OVERHEAD, node_label, split_message
 
 
 def test_short_message_returned_as_single_chunk():
@@ -29,7 +31,7 @@ def test_all_chunks_within_max_length():
 def test_first_chunk_has_ellipsis_suffix():
     text = ("word " * 40).strip()
     result = split_message(text)
-    assert result[0].endswith("... [1/%d]" % len(result))
+    assert result[0].endswith(f"... [1/{len(result)}]")
 
 
 def test_last_chunk_has_ellipsis_prefix():
@@ -58,7 +60,7 @@ def test_counter_label_reflects_total():
 
 
 def test_empty_string_returns_empty_list():
-    assert split_message("") == []
+    assert not split_message("")
 
 
 def test_single_word_at_max_length_not_split():
@@ -75,3 +77,174 @@ def test_two_chunk_split_structure():
     assert result[0].endswith("... [1/2]")
     assert result[1].startswith("...")
     assert result[1].endswith("[2/2]")
+
+
+def test_node_label_with_name_and_key():
+    contact = {"adv_name": "KD2NSP", "public_key": "abcdef123456789000"}
+    assert node_label(contact) == "KD2NSP (abcdef123456)"
+
+
+def test_node_label_without_name_shows_key_only():
+    contact = {"adv_name": "", "public_key": "abcdef123456789000"}
+    assert node_label(contact) == "(abcdef123456)"
+
+
+def test_node_label_truncates_key_to_12_chars():
+    contact = {"adv_name": "Test", "public_key": "a" * 32}
+    assert node_label(contact) == f"Test ({'a' * 12})"
+
+
+def test_node_label_none_contact_returns_unknown():
+    assert node_label(None) == "unknown (unknown)"
+
+
+def _make_adsb(config=None):
+    return AdsbService(
+        config
+        or {
+            "adsb": {
+                "url": "http://localhost:8080",
+                "max_age_seconds": 60,
+                "max_count": 5,
+            }
+        }
+    )
+
+
+def _mock_response(aircraft):
+    mock = MagicMock()
+    mock.json.return_value = {"aircraft": aircraft}
+    return mock
+
+
+def test_get_aircraft_no_recent_aircraft():
+    service = _make_adsb()
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response([])
+        assert service.get_aircraft() == "No aircraft currently seen."
+
+
+def test_get_aircraft_filters_by_max_age():
+    service = _make_adsb()
+    aircraft = [
+        {"hex": "aaa111", "flight": "AA100", "seen": 10},
+        {"hex": "bbb222", "flight": "BB200", "seen": 90},  # too old
+    ]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "[AA100]" in result
+        assert "[BB200]" not in result
+
+
+def test_get_aircraft_uses_hex_when_no_callsign():
+    service = _make_adsb()
+    aircraft = [{"hex": "abc123", "flight": "", "seen": 5}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "[ABC123]" in result
+
+
+def test_get_aircraft_formats_low_altitude_as_feet():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "alt_baro": 5000}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "5000ft" in result
+
+
+def test_get_aircraft_formats_high_altitude_as_flight_level():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "alt_baro": 35000}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "FL350" in result
+
+
+def test_get_aircraft_omits_altitude_when_on_ground():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "alt_baro": "ground"}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "ft" not in result
+        assert "FL" not in result
+
+
+def test_get_aircraft_respects_max_count():
+    service = _make_adsb(
+        {
+            "adsb": {
+                "url": "http://localhost:8080",
+                "max_age_seconds": 60,
+                "max_count": 2,
+            }
+        }
+    )
+    aircraft = [
+        {"hex": "aaa111", "flight": "AA1", "seen": 1},
+        {"hex": "bbb222", "flight": "BB2", "seen": 2},
+        {"hex": "ccc333", "flight": "CC3", "seen": 3},
+    ]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "[AA1]" in result
+        assert "[BB2]" in result
+        assert "[CC3]" not in result
+
+
+def test_db_inserts_new_node(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("abc123", "KD2NSP", 42.0, -73.0)
+    nodes = db.get_seen_nodes()
+    assert len(nodes) == 1
+    assert nodes[0]["name"] == "KD2NSP"
+    assert nodes[0]["lat"] == 42.0
+    assert nodes[0]["lon"] == -73.0
+
+
+def test_db_updates_name_on_change(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("abc123", "OldName")
+    db.upsert_node("abc123", "NewName")
+    nodes = db.get_seen_nodes()
+    assert nodes[0]["name"] == "NewName"
+
+
+def test_db_preserves_name_when_empty_update(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("abc123", "KD2NSP")
+    db.upsert_node("abc123", "")
+    nodes = db.get_seen_nodes()
+    assert nodes[0]["name"] == "KD2NSP"
+
+
+def test_db_preserves_lat_lon_when_none_update(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("abc123", "KD2NSP", 42.0, -73.0)
+    db.upsert_node("abc123", "KD2NSP", None, None)
+    nodes = db.get_seen_nodes()
+    assert nodes[0]["lat"] == 42.0
+    assert nodes[0]["lon"] == -73.0
+
+
+def test_db_updates_lat_lon(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("abc123", "KD2NSP", 42.0, -73.0)
+    db.upsert_node("abc123", "KD2NSP", 43.0, -74.0)
+    nodes = db.get_seen_nodes()
+    assert nodes[0]["lat"] == 43.0
+    assert nodes[0]["lon"] == -74.0
+
+
+def test_db_orders_by_most_recently_seen(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_node("aaa111", "Alpha")
+    db.upsert_node("bbb222", "Beta")
+    db.upsert_node("aaa111", "Alpha")  # touch again to make most recent
+    nodes = db.get_seen_nodes()
+    assert nodes[0]["id"] == "aaa111"

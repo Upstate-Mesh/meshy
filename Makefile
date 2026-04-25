@@ -1,17 +1,20 @@
+PYTHON = ~/py_envs/bin/python
+BIN    = ~/py_envs/bin
+
 .PHONY: run format deps test
 
 deps:
-	python3 -m pip install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements.txt
 
 run:
-	python3 main.py
+	$(PYTHON) main.py
 
 test:
-	python3 -m pytest main_spec.py -v
+	$(PYTHON) -m pytest main_spec.py -v
 
 format:
-	black .
-	isort --profile black .
-	yamlfix .
-	mdformat .
-	pylint --rcfile .pylintrc --recursive=y ./
+	$(BIN)/black .
+	$(BIN)/isort --profile black .
+	$(BIN)/yamlfix .
+	$(BIN)/mdformat .
+	$(BIN)/pylint --rcfile .pylintrc --recursive=y ./
