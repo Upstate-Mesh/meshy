@@ -106,4 +106,4 @@ class AdsbService:
 
         lines = [_format_aircraft(a, home_lat, home_lon) for a in recent]
 
-        return f"✈️\r\n{chr(10).join(f'{line},' for line in lines)}"
+        return chr(10).join(f"{line}," for line in lines)

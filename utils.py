@@ -1,27 +1,42 @@
-import textwrap
+MAX_MSG_BYTES = 133
+# Overhead per chunk when split: " [xx/xx]" suffix (max 9 bytes)
+SPLIT_OVERHEAD = 9
 
-MAX_MSG_LEN = 133
-# Overhead per chunk when split: "..." prefix (3) + "... [xx/xx]" suffix (11)
-SPLIT_OVERHEAD = 14
+
+def _blen(text):
+    return len(text.encode("utf-8"))
+
+
+def _wrap_by_bytes(text, max_bytes):
+    """Word-wrap text so each chunk's UTF-8 byte length <= max_bytes."""
+    words = text.split()
+    chunks = []
+    current = []
+    current_bytes = 0
+    for word in words:
+        word_bytes = _blen(word)
+        space = 1 if current else 0
+        if current and current_bytes + space + word_bytes > max_bytes:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_bytes = word_bytes
+        else:
+            current.append(word)
+            current_bytes += space + word_bytes
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
 
 
 def split_message(text):
-    chunks = textwrap.wrap(text, width=MAX_MSG_LEN)
-    if len(chunks) == 1:
-        return chunks
+    if not text:
+        return []
+    if _blen(text) <= MAX_MSG_BYTES:
+        return [text]
 
-    chunks = textwrap.wrap(text, width=MAX_MSG_LEN - SPLIT_OVERHEAD)
+    chunks = _wrap_by_bytes(text, MAX_MSG_BYTES - SPLIT_OVERHEAD)
     n = len(chunks)
-    result = []
-    for i, chunk in enumerate(chunks):
-        label = f"[{i + 1}/{n}]"
-        if i == 0:
-            result.append(f"{chunk}... {label}")
-        elif i == n - 1:
-            result.append(f"...{chunk} {label}")
-        else:
-            result.append(f"...{chunk}... {label}")
-    return result
+    return [f"{chunk} [{i + 1}/{n}]" for i, chunk in enumerate(chunks)]
 
 
 def node_label(contact):

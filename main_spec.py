@@ -8,7 +8,7 @@ from adsb import (
     _format_aircraft,
 )
 from db import NodeDB
-from utils import MAX_MSG_LEN, SPLIT_OVERHEAD, node_label, split_message
+from utils import MAX_MSG_BYTES, SPLIT_OVERHEAD, node_label, split_message
 
 
 def test_short_message_returned_as_single_chunk():
@@ -17,7 +17,7 @@ def test_short_message_returned_as_single_chunk():
 
 
 def test_exact_max_length_returned_as_single_chunk():
-    text = "x" * MAX_MSG_LEN
+    text = "x" * MAX_MSG_BYTES
     result = split_message(text)
     assert result == [text]
 
@@ -31,30 +31,28 @@ def test_long_message_splits_into_multiple_chunks():
 def test_all_chunks_within_max_length():
     text = ("word " * 40).strip()
     for chunk in split_message(text):
-        assert len(chunk) <= MAX_MSG_LEN
+        assert len(chunk) <= MAX_MSG_BYTES
 
 
-def test_first_chunk_has_ellipsis_suffix():
+def test_first_chunk_ends_with_label():
     text = ("word " * 40).strip()
     result = split_message(text)
-    assert result[0].endswith(f"... [1/{len(result)}]")
+    assert result[0].endswith(f"[1/{len(result)}]")
 
 
-def test_last_chunk_has_ellipsis_prefix():
+def test_last_chunk_ends_with_label():
     text = ("word " * 40).strip()
     result = split_message(text)
     n = len(result)
-    assert result[-1].startswith("...")
     assert result[-1].endswith(f"[{n}/{n}]")
 
 
-def test_middle_chunks_have_ellipsis_both_sides():
+def test_middle_chunks_end_with_label():
     text = ("word " * 80).strip()
     result = split_message(text)
     assert len(result) >= 3
-    for chunk in result[1:-1]:
-        assert chunk.startswith("...")
-        assert "..." in chunk[3:]
+    for i, chunk in enumerate(result[1:-1], start=2):
+        assert chunk.endswith(f"[{i}/{len(result)}]")
 
 
 def test_counter_label_reflects_total():
@@ -70,18 +68,17 @@ def test_empty_string_returns_empty_list():
 
 
 def test_single_word_at_max_length_not_split():
-    text = "x" * MAX_MSG_LEN
+    text = "x" * MAX_MSG_BYTES
     result = split_message(text)
     assert len(result) == 1
 
 
 def test_two_chunk_split_structure():
-    inner_width = MAX_MSG_LEN - SPLIT_OVERHEAD
+    inner_width = MAX_MSG_BYTES - SPLIT_OVERHEAD
     text = "word " * (inner_width // 5 + 5)
     result = split_message(text.strip())
     assert len(result) == 2
-    assert result[0].endswith("... [1/2]")
-    assert result[1].startswith("...")
+    assert result[0].endswith("[1/2]")
     assert result[1].endswith("[2/2]")
 
 
