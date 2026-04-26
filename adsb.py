@@ -28,7 +28,7 @@ def _climb_indicator(baro_rate):
         return f"⬆️{abs(baro_rate)}fpm"
     if baro_rate < -100:
         return f"⬇️{abs(baro_rate)}fpm"
-    return "➡️"
+    return ""
 
 
 def _distance_bearing(home_lat, home_lon, lat, lon):

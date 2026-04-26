@@ -300,7 +300,7 @@ def test_climb_indicator_descending():
 
 
 def test_climb_indicator_level():
-    assert _climb_indicator(50) == "➡️"
+    assert _climb_indicator(50) == ""
 
 
 def test_climb_indicator_none():
