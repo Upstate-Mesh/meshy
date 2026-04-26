@@ -1,6 +1,12 @@
 from unittest.mock import MagicMock, patch
 
-from adsb import AdsbService
+from adsb import (
+    AdsbService,
+    _cardinal,
+    _climb_indicator,
+    _distance_bearing,
+    _format_aircraft,
+)
 from db import NodeDB
 from utils import MAX_MSG_LEN, SPLIT_OVERHEAD, node_label, split_message
 
@@ -195,6 +201,140 @@ def test_get_aircraft_respects_max_count():
         assert "[AA1]" in result
         assert "[BB2]" in result
         assert "[CC3]" not in result
+
+
+def test_get_aircraft_shows_on_ground():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "alt_baro": "ground"}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "🛬" in service.get_aircraft()
+
+
+def test_get_aircraft_shows_category():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "category": "A7"}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "🚁" in service.get_aircraft()
+
+
+def test_get_aircraft_omits_unknown_category():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "category": "A3"}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        result = service.get_aircraft()
+        assert "🚁" not in result
+
+
+def test_get_aircraft_shows_heading():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "track": 90}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "→E" in service.get_aircraft()
+
+
+def test_get_aircraft_shows_climb():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "baro_rate": 1500}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "⬆️1500fpm" in service.get_aircraft()
+
+
+def test_get_aircraft_shows_descent():
+    service = _make_adsb()
+    aircraft = [{"hex": "aaa111", "flight": "AA100", "seen": 5, "baro_rate": -800}]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "⬇️800fpm" in service.get_aircraft()
+
+
+def test_get_aircraft_shows_distance_when_home_configured():
+    service = _make_adsb(
+        {
+            "adsb": {
+                "url": "http://localhost:8080",
+                "max_age_seconds": 60,
+                "max_count": 5,
+                "home_lat": 42.65,
+                "home_lon": -73.75,
+            }
+        }
+    )
+    aircraft = [
+        {"hex": "aaa111", "flight": "AA100", "seen": 5, "lat": 42.65, "lon": -73.75}
+    ]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "📍0.0mi" in service.get_aircraft()
+
+
+def test_get_aircraft_no_distance_without_home():
+    service = _make_adsb()
+    aircraft = [
+        {"hex": "aaa111", "flight": "AA100", "seen": 5, "lat": 42.65, "lon": -73.75}
+    ]
+    with patch("adsb.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(aircraft)
+        assert "📍" not in service.get_aircraft()
+
+
+def test_cardinal_directions():
+    assert _cardinal(0) == "N"
+    assert _cardinal(90) == "E"
+    assert _cardinal(180) == "S"
+    assert _cardinal(270) == "W"
+    assert _cardinal(45) == "NE"
+    assert _cardinal(315) == "NW"
+
+
+def test_climb_indicator_climbing():
+    assert _climb_indicator(1200) == "⬆️1200fpm"
+
+
+def test_climb_indicator_descending():
+    assert _climb_indicator(-800) == "⬇️800fpm"
+
+
+def test_climb_indicator_level():
+    assert _climb_indicator(50) == "➡️"
+
+
+def test_climb_indicator_none():
+    assert _climb_indicator(None) == ""
+
+
+def test_distance_bearing_same_point():
+    distance, _ = _distance_bearing(42.65, -73.75, 42.65, -73.75)
+    assert distance == 0.0
+
+
+def test_distance_bearing_cardinal():
+    _, bearing = _distance_bearing(0.0, 0.0, 0.0, 1.0)
+    assert bearing == "E"
+
+
+def test_format_aircraft_full():
+    a = {
+        "hex": "aaa111",
+        "flight": "AA100",
+        "alt_baro": 35000,
+        "track": 270,
+        "baro_rate": 1000,
+        "category": "A5",
+        "lat": 42.65,
+        "lon": -73.75,
+    }
+    result = _format_aircraft(a, home_lat=42.65, home_lon=-73.75)
+    assert "[AA100]" in result
+    assert "Heavy" in result
+    assert "FL350" in result
+    assert "→W" in result
+    assert "⬆️1000fpm" in result
+    assert "📍0.0mi" in result
 
 
 def test_db_inserts_new_node(tmp_path):

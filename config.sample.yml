@@ -14,6 +14,8 @@ adsb:
   url: http://localhost:8080
   max_age_seconds: 60
   max_count: 5
+  home_lat: 0.0
+  home_lon: 0.0
 bot:
   active: true
   auto_accept_contacts: true

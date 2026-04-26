@@ -1,7 +1,8 @@
 meshcore
-metpy
 PyYAML
 python-dotenv
+requests
+geopy
 black
 loguru
 pysqlite3
