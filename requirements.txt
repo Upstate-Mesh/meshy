@@ -1,4 +1,5 @@
 meshcore
+beautifulsoup4
 PyYAML
 python-dotenv
 requests

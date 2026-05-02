@@ -8,6 +8,8 @@ from meshcore import EventType, MeshCore
 
 from adsb import AdsbService
 from db import NodeDB
+from hf import HfService
+from nixle import NixleService
 from scheduled_worker import ScheduledWorker
 from utils import node_label, split_message
 from weather import WeatherService
@@ -26,8 +28,11 @@ class Meshy:
         self.worker_jobs = []
         self.mc = None
         self.channel_map = {}
+        self._send_queue = asyncio.Queue()
         self.weather = WeatherService(self.config)
         self.adsb = AdsbService(self.config)
+        self.nixle = NixleService(self.config)
+        self.hf = HfService()
 
         if self.config["save_node_db"]:
             self.db = NodeDB()
@@ -38,16 +43,37 @@ class Meshy:
         self.mc = await self.connect_and_run()
         await self.mc.ensure_contacts()
         await self.build_channel_map()
+        await self.bootstrap_nixle()
         self.start_jobs()
 
+        send_task = asyncio.create_task(self._send_queue_worker())
         try:
             await asyncio.sleep(float("inf"))
         except (KeyboardInterrupt, asyncio.CancelledError):
             logger.info("Closing connection, shutting down.")
         finally:
+            send_task.cancel()
             for worker_job in self.worker_jobs:
                 worker_job.stop()
             await self.mc.disconnect()
+
+    async def _send_queue_worker(self):
+        delay = self.config.get("send_delay", 2)
+        while True:
+            item = await self._send_queue.get()
+            kind, *args = item
+            try:
+                if kind == "dm":
+                    contact, chunk = args
+                    await self.mc.commands.send_msg(contact, chunk)
+                elif kind == "chan":
+                    channel_index, chunk = args
+                    await self.mc.commands.send_chan_msg(channel_index, chunk)
+            except Exception as e:
+                logger.error(f"Send queue error: {e}")
+            finally:
+                self._send_queue.task_done()
+            await asyncio.sleep(delay)
 
     async def connect_and_run(self):
         attempt = 0
@@ -110,7 +136,7 @@ class Meshy:
 
             if contact:
                 for chunk in split_message(reply_text):
-                    await self.mc.commands.send_msg(contact, chunk)
+                    await self._send_queue.put(("dm", contact, chunk))
             else:
                 logger.warning(f"Could not find contact for {label}, cannot reply.")
         except Exception as e:
@@ -191,6 +217,17 @@ class Meshy:
     def get_aircraft(self):
         return self.adsb.get_aircraft()
 
+    def get_alerts(self):
+        alerts = self.nixle.get_alerts()[:3]
+
+        if not alerts:
+            return "No recent alerts."
+        return "\n".join(NixleService.format_alert(a) for a in alerts)
+
+    def get_hf_conditions(self):
+        day_msg, night_msg = self.hf.get_conditions()
+        return f"{day_msg}\n{night_msg}"
+
     def get_seen_nodes(self):
         if self.db is None:
             return "Command inactive."
@@ -223,7 +260,7 @@ class Meshy:
         if channel_index is None:
             return
         for chunk in split_message(msg):
-            await self.mc.commands.send_chan_msg(channel_index, chunk)
+            await self._send_queue.put(("chan", channel_index, chunk))
         logger.info(f"-> '{msg}' on '{job['channel']}' ({channel_index})")
 
     async def get_beacon_worker(self, job):
@@ -244,6 +281,35 @@ class Meshy:
             )
         except requests.exceptions.RequestException as e:
             logger.info(f"Weather forecast request failed: {e}")
+
+    async def bootstrap_nixle(self):
+        if not self.nixle.url or self.db is None:
+            return
+        try:
+            alerts = await asyncio.to_thread(self.nixle.get_alerts)
+            for alert in alerts:
+                self.db.upsert_alert(alert["id"])
+            logger.info(f"Nixle bootstrap: marked {len(alerts)} alerts as seen.")
+        except Exception as e:
+            logger.warning(f"Nixle bootstrap failed: {e}")
+
+    async def get_hf_worker(self, job):
+        try:
+            day_msg, night_msg = await asyncio.to_thread(self.hf.get_conditions)
+            await self._send_channel_message(job, day_msg)
+            await self._send_channel_message(job, night_msg)
+        except requests.exceptions.RequestException as e:
+            logger.info(f"HF conditions request failed: {e}")
+
+    async def get_nixle_worker(self, job):
+        try:
+            alerts = await asyncio.to_thread(self.nixle.get_alerts)
+            for alert in alerts:
+                if self.db.upsert_alert(alert["id"]):
+                    msg = NixleService.format_alert(alert)
+                    await self._send_channel_message(job, msg)
+        except requests.exceptions.RequestException as e:
+            logger.info(f"Nixle request failed: {e}")
 
     async def get_aircraft_worker(self, job):
         try:

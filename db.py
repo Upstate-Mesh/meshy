@@ -30,7 +30,12 @@ class NodeDB:
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id TEXT PRIMARY KEY,
+                seen_at TEXT NOT NULL
+            )
+        """)
         conn.commit()
         conn.close()
 
@@ -67,6 +72,19 @@ class NodeDB:
                 )
 
             conn.commit()
+        finally:
+            conn.close()
+
+    def upsert_alert(self, alert_id):
+        """Insert alert if not already seen. Returns True if new, False if duplicate."""
+        conn = self._get_conn()
+        try:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO alerts (id, seen_at) VALUES (?, ?)",
+                (alert_id, _now()),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 

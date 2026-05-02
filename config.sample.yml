@@ -1,6 +1,7 @@
 ---
 save_node_db: true
 serial_port: /dev/ttyACM0
+send_delay: 2
 weather:
   conditions:
     humidity_entity_id: sensor.outdoor_humidity
@@ -10,6 +11,8 @@ weather:
   forecast:
     url: https://api.weather.gov/gridpoints/ALY/72,63/forecast
     user_agent: (example.com, example@example.com)
+nixle:
+  url: https://nixle.us/city/your-state/your-city/
 adsb:
   url: http://localhost:8080
   max_age_seconds: 60
@@ -23,7 +26,8 @@ bot:
     .about: I'm a MeshCore bot 🤖
     .conditions: get_weather_conditions
     .forecast: get_weather_forecast
-    .help: 'Available commands: .about .conditions .forecast .help .ping .seen'
+    .hf: get_hf_conditions
+    .help: 'Available commands: .about .conditions .forecast .hf .help .ping .seen'
     .ping: pong!
     .seen: get_seen_nodes
 workers:
@@ -58,3 +62,13 @@ workers:
     channel: public
     cron: 0 * * * *
     dispatch: get_aircraft_worker
+  - type: nixle
+    active: false
+    channel: public
+    cron: 0 * * * *
+    dispatch: get_nixle_worker
+  - type: hf_conditions
+    active: false
+    channel: public
+    cron: 0 */6 * * *
+    dispatch: get_hf_worker

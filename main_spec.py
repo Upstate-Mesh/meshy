@@ -8,7 +8,43 @@ from adsb import (
     _format_aircraft,
 )
 from db import NodeDB
+from hf import HfService, _format
+from nixle import NixleService
 from utils import MAX_MSG_BYTES, SPLIT_OVERHEAD, node_label, split_message
+
+NIXLE_HTML = """
+<ol id="wire">
+  <li id="pub_1">
+    <div class="wire_content">
+      <p class="time">Entered: 1 hour ago</p>
+      <p>Road closure on Main St <a href="https://nixle.us/AAA11">More&nbsp;&raquo;</a></p>
+    </div>
+  </li>
+  <li id="pub_2">
+    <div class="wire_content">
+      <p class="time">Entered: 3 hours ago</p>
+      <p>Water main break on Elm Ave <a href="https://nixle.us/BBB22">More&nbsp;&raquo;</a></p>
+    </div>
+  </li>
+  <li id="pub_3">
+    <div class="wire_content">
+      <p class="time">Entered: 5 hours ago</p>
+      <p>Power outage on Oak St <a href="https://nixle.us/CCC33">More&nbsp;&raquo;</a></p>
+    </div>
+  </li>
+</ol>
+"""
+
+
+def _mock_nixle(html=NIXLE_HTML):
+    mock = MagicMock()
+    mock.text = html
+    mock.raise_for_status = MagicMock()
+    return mock
+
+
+def _make_nixle():
+    return NixleService({"nixle": {"url": "http://localhost/nixle"}})
 
 
 def test_short_message_returned_as_single_chunk():
@@ -385,3 +421,136 @@ def test_db_orders_by_most_recently_seen(tmp_path):
     db.upsert_node("aaa111", "Alpha")  # touch again to make most recent
     nodes = db.get_seen_nodes()
     assert nodes[0]["id"] == "aaa111"
+
+
+def test_format_alert():
+    alert = {"id": "AAA11", "text": "Road closure on Main St"}
+    assert (
+        NixleService.format_alert(alert)
+        == "Road closure on Main St https://nixle.us/AAA11"
+    )
+
+
+def test_get_alerts_returns_all_items():
+    service = _make_nixle()
+    with patch("nixle.requests.get", return_value=_mock_nixle()):
+        alerts = service.get_alerts()
+    assert len(alerts) == 3
+
+
+def test_get_alerts_extracts_id_and_text():
+    service = _make_nixle()
+    with patch("nixle.requests.get", return_value=_mock_nixle()):
+        alerts = service.get_alerts()
+    assert alerts[0] == {"id": "AAA11", "text": "Road closure on Main St"}
+    assert alerts[1] == {"id": "BBB22", "text": "Water main break on Elm Ave"}
+
+
+def test_get_alerts_excludes_more_link_text():
+    service = _make_nixle()
+    with patch("nixle.requests.get", return_value=_mock_nixle()):
+        alerts = service.get_alerts()
+    for alert in alerts:
+        assert "More" not in alert["text"]
+
+
+def test_get_alerts_no_wire_returns_empty():
+    service = _make_nixle()
+    with patch(
+        "nixle.requests.get", return_value=_mock_nixle("<html><body></body></html>")
+    ):
+        assert service.get_alerts() == []
+
+
+def test_get_alerts_skips_items_without_nixle_link():
+    html = """
+    <ol id="wire">
+      <li><p>No link here</p></li>
+      <li><p>Has link <a href="https://nixle.us/DDD44">More</a></p></li>
+    </ol>
+    """
+    service = _make_nixle()
+    with patch("nixle.requests.get", return_value=_mock_nixle(html)):
+        alerts = service.get_alerts()
+    assert len(alerts) == 1
+    assert alerts[0]["id"] == "DDD44"
+
+
+def test_db_upsert_alert_new_returns_true(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    assert db.upsert_alert("AAA11") is True
+
+
+def test_db_upsert_alert_duplicate_returns_false(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_alert("AAA11")
+    assert db.upsert_alert("AAA11") is False
+
+
+def test_db_upsert_alert_different_ids_both_stored(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    assert db.upsert_alert("AAA11") is True
+    assert db.upsert_alert("BBB22") is True
+
+
+HF_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<solar><solardata>
+  <calculatedconditions>
+    <band name="80m-40m" time="day">Fair</band>
+    <band name="30m-20m" time="day">Good</band>
+    <band name="17m-15m" time="day">Good</band>
+    <band name="12m-10m" time="day">Poor</band>
+    <band name="80m-40m" time="night">Good</band>
+    <band name="30m-20m" time="night">Good</band>
+    <band name="17m-15m" time="night">Fair</band>
+    <band name="12m-10m" time="night">Poor</band>
+  </calculatedconditions>
+</solardata></solar>"""
+
+
+def _mock_hf(xml=HF_XML):
+    mock = MagicMock()
+    mock.text = xml
+    mock.raise_for_status = MagicMock()
+    return mock
+
+
+def test_hf_format_day():
+    assert (
+        _format([("80m-40m", "Fair"), ("30m-20m", "Good")], "☀️")
+        == "HF ☀️ 80m-40m:Fair 30m-20m:Good"
+    )
+
+
+def test_hf_format_night():
+    assert _format([("80m-40m", "Good")], "🌙") == "HF 🌙 80m-40m:Good"
+
+
+def test_hf_get_conditions_returns_two_messages():
+    with patch("hf.requests.get", return_value=_mock_hf()):
+        day_msg, night_msg = HfService().get_conditions()
+    assert day_msg.startswith("HF ☀️")
+    assert night_msg.startswith("HF 🌙")
+
+
+def test_hf_get_conditions_day_bands():
+    with patch("hf.requests.get", return_value=_mock_hf()):
+        day_msg, _ = HfService().get_conditions()
+    assert "80m-40m:Fair" in day_msg
+    assert "30m-20m:Good" in day_msg
+    assert "12m-10m:Poor" in day_msg
+
+
+def test_hf_get_conditions_night_bands():
+    with patch("hf.requests.get", return_value=_mock_hf()):
+        _, night_msg = HfService().get_conditions()
+    assert "80m-40m:Good" in night_msg
+    assert "17m-15m:Fair" in night_msg
+    assert "12m-10m:Poor" in night_msg
+
+
+def test_hf_day_excludes_night_bands():
+    with patch("hf.requests.get", return_value=_mock_hf()):
+        day_msg, night_msg = HfService().get_conditions()
+    assert "🌙" not in day_msg
+    assert "☀️" not in night_msg
