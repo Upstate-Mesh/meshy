@@ -24,12 +24,24 @@ bot:
   auto_accept_contacts: true
   commands:
     .about: I'm a MeshCore bot 🤖
+    .aircraft: get_aircraft
+    .alerts: get_alerts
     .conditions: get_weather_conditions
     .forecast: get_weather_forecast
     .hf: get_hf_conditions
-    .help: 'Available commands: .about .conditions .forecast .hf .help .ping .seen'
+    .help: 'Available commands: .about .aircraft .alerts .conditions .forecast .hf
+      .help .ping .seen'
     .ping: pong!
     .seen: get_seen_nodes
+channel_commands:
+  - channel: '#adsb'
+    command: .aircraft
+    dispatch: get_aircraft
+    cooldown_seconds: 300
+  - channel: '#weather'
+    command: .conditions
+    dispatch: get_weather_conditions
+    cooldown_seconds: 300
 workers:
   - type: advert
     active: true

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 
 import requests
 import yaml
@@ -29,6 +30,7 @@ class Meshy:
         self.mc = None
         self.channel_map = {}
         self._send_queue = asyncio.Queue()
+        self._channel_cooldowns: dict[tuple[str, str], datetime] = {}
         self.weather = WeatherService(self.config)
         self.adsb = AdsbService(self.config)
         self.nixle = NixleService(self.config)
@@ -88,6 +90,7 @@ class Meshy:
                 logger.info("Connected to node.")
 
                 mc.subscribe(EventType.CONTACT_MSG_RECV, self.on_receive)
+                mc.subscribe(EventType.CHANNEL_MSG_RECV, self.on_channel_receive)
                 mc.subscribe(EventType.NEW_CONTACT, self.on_advert_received)
 
                 if self.db is not None:
@@ -207,6 +210,85 @@ class Meshy:
             return await asyncio.to_thread(getattr(self, action))
 
         return action
+
+    async def on_channel_receive(self, event):
+        if not self.config.get("bot", {}).get("active", True):
+            return
+
+        try:
+            channel_idx = event.payload.get("channel_idx")
+            text = event.payload.get("text", "")
+
+            if not text:
+                return
+
+            # Channel messages include a sender prefix: "CallSign: .command"
+            cmd_text = text.strip()
+            if ": " in cmd_text:
+                cmd_text = cmd_text.split(": ", 1)[1]
+            cmd = cmd_text.strip().lower()
+
+            channel_key = next(
+                (
+                    name.lstrip("#")
+                    for name, idx in self.channel_map.items()
+                    if idx == channel_idx
+                ),
+                None,
+            )
+            if channel_key is None:
+                logger.info(
+                    f"<- channel event: idx={channel_idx} not in channel_map {self.channel_map}, ignoring."
+                )
+                return
+
+            matched = next(
+                (
+                    cc
+                    for cc in self.config.get("channel_commands", [])
+                    if cc.get("channel", "").lower().lstrip("#") == channel_key
+                    and cc.get("command", "").lower() == cmd
+                ),
+                None,
+            )
+            if matched is None:
+                logger.debug(
+                    f"<- channel {channel_key}: unrecognized command {cmd!r}, ignoring."
+                )
+                return
+
+            cooldown_seconds = matched.get("cooldown_seconds", 300)
+            if not self._check_and_update_cooldown(channel_key, cmd, cooldown_seconds):
+                logger.debug(f"Cooldown active for {cmd} in {channel_key}, ignoring.")
+                return
+
+            dispatch = matched.get("dispatch")
+            method = getattr(self, dispatch, None)
+            if method is None:
+                logger.warning(f"Unknown channel command dispatch: {dispatch}")
+                return
+
+            logger.info(f"<- channel {channel_key}: {cmd}")
+            msg = await asyncio.to_thread(method)
+
+            if msg:
+                logger.info(f"-> {channel_key}: {msg}")
+                for chunk in split_message(msg):
+                    await self._send_queue.put(("chan", channel_idx, chunk))
+
+        except Exception as e:
+            logger.error(f"Channel command error: {e}")
+
+    def _check_and_update_cooldown(self, channel_name, command, cooldown_seconds):
+        key = (channel_name, command)
+        last = self._channel_cooldowns.get(key)
+        now = datetime.now(UTC)
+
+        if last is not None and (now - last).total_seconds() < cooldown_seconds:
+            return False
+
+        self._channel_cooldowns[key] = now
+        return True
 
     def get_weather_conditions(self):
         return self.weather.get_conditions()
@@ -342,7 +424,8 @@ class Meshy:
                 logger.info(f"Job inactive: {job_type}, skipping")
                 continue
 
-            worker = getattr(self, job.get("dispatch"), None)
+            dispatch = job.get("dispatch")
+            worker = getattr(self, dispatch, None) if dispatch else None
 
             if worker:
                 cron = job.get("cron")

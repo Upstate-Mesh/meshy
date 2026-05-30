@@ -7,7 +7,7 @@ class NixleService:
         self.url = config.get("nixle", {}).get("url", "")
 
     def get_alerts(self):
-        response = requests.get(self.url, timeout=10)
+        response = requests.get(self.url, timeout=30)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")

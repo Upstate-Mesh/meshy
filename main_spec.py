@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from adsb import (
@@ -554,3 +555,82 @@ def test_hf_day_excludes_night_bands():
         day_msg, night_msg = HfService().get_conditions()
     assert "🌙" not in day_msg
     assert "☀️" not in night_msg
+
+
+# --- Cooldown tests ---
+
+
+def _make_meshy_stub():
+    """Minimal Meshy-like object for testing _check_and_update_cooldown."""
+    from main import Meshy
+
+    with patch("main.Meshy.__init__", return_value=None):
+        m = Meshy.__new__(Meshy)
+    m._channel_cooldowns = {}
+    m._check_and_update_cooldown = Meshy._check_and_update_cooldown.__get__(m)
+    return m
+
+
+def _parse_channel_cmd(text):
+    """Mirror of the sender-prefix stripping in on_channel_receive."""
+    cmd_text = text.strip()
+    if ": " in cmd_text:
+        cmd_text = cmd_text.split(": ", 1)[1]
+    return cmd_text.strip().lower()
+
+
+def test_channel_cmd_strips_sender_prefix():
+    assert _parse_channel_cmd("KD2NSP: .aircraft") == ".aircraft"
+
+
+def test_channel_cmd_no_prefix_passthrough():
+    assert _parse_channel_cmd(".aircraft") == ".aircraft"
+
+
+def test_channel_cmd_lowercases():
+    assert _parse_channel_cmd("KD2NSP: .AIRCRAFT") == ".aircraft"
+
+
+def test_channel_cmd_colon_in_message_body():
+    # Only the first ": " is treated as sender separator
+    assert _parse_channel_cmd("KD2NSP: say: hello") == "say: hello"
+
+
+def test_cooldown_allows_first_call():
+    m = _make_meshy_stub()
+    assert m._check_and_update_cooldown("#adsb", ".seen", 300) is True
+
+
+def test_cooldown_blocks_within_window():
+    m = _make_meshy_stub()
+    m._check_and_update_cooldown("#adsb", ".seen", 300)
+    assert m._check_and_update_cooldown("#adsb", ".seen", 300) is False
+
+
+def test_cooldown_allows_after_window():
+    m = _make_meshy_stub()
+    m._channel_cooldowns[("#adsb", ".seen")] = datetime.now(UTC) - timedelta(
+        seconds=301
+    )
+    assert m._check_and_update_cooldown("#adsb", ".seen", 300) is True
+
+
+def test_cooldown_independent_per_channel():
+    m = _make_meshy_stub()
+    m._check_and_update_cooldown("#adsb", ".seen", 300)
+    assert m._check_and_update_cooldown("#ham", ".seen", 300) is True
+
+
+def test_cooldown_independent_per_command():
+    m = _make_meshy_stub()
+    m._check_and_update_cooldown("#adsb", ".seen", 300)
+    assert m._check_and_update_cooldown("#adsb", ".aircraft", 300) is True
+
+
+def test_cooldown_records_timestamp():
+    m = _make_meshy_stub()
+    before = datetime.now(UTC)
+    m._check_and_update_cooldown("#adsb", ".seen", 300)
+    after = datetime.now(UTC)
+    recorded = m._channel_cooldowns[("#adsb", ".seen")]
+    assert before <= recorded <= after
