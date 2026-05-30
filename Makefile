@@ -4,6 +4,7 @@ BIN    = ~/py_envs/bin
 .PHONY: run format deps test
 
 deps:
+	@if [ ! -d ~/py_envs ]; then python3 -m venv ~/py_envs; fi
 	$(PYTHON) -m pip install -r requirements.txt
 
 run:

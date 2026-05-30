@@ -79,14 +79,22 @@ class Meshy:
 
     async def connect_and_run(self):
         attempt = 0
+        tcp = self.config.get("tcp")
         while True:
             try:
-                logger.info(
-                    f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
-                )
-                mc = await MeshCore.create_serial(
-                    self.config["serial_port"], baudrate=115200
-                )
+                if tcp:
+                    host, port = tcp["host"], tcp["port"]
+                    logger.info(
+                        f"Connecting to node via TCP {host}:{port} (attempt {attempt + 1})..."
+                    )
+                    mc = await MeshCore.create_tcp(host, port)
+                else:
+                    logger.info(
+                        f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
+                    )
+                    mc = await MeshCore.create_serial(
+                        self.config["serial_port"], baudrate=115200
+                    )
                 logger.info("Connected to node.")
 
                 mc.subscribe(EventType.CONTACT_MSG_RECV, self.on_receive)

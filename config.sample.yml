@@ -1,6 +1,9 @@
 ---
 save_node_db: true
 serial_port: /dev/ttyACM0
+# tcp:  # If set, TCP takes precedence over serial_port
+#   host: 192.168.1.100
+#   port: 4000
 send_delay: 2
 weather:
   conditions:
