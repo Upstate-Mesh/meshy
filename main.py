@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
 
 import requests
@@ -84,6 +85,7 @@ class Meshy:
             try:
                 if tcp:
                     host, port = tcp["host"], tcp["port"]
+                    logging.getLogger("meshcore").setLevel(logging.WARNING)
                     logger.info(
                         f"Connecting to node via TCP {host}:{port} (attempt {attempt + 1})..."
                     )
@@ -170,8 +172,6 @@ class Meshy:
 
             # payload has full contact info
             contact = dict(event.payload)
-            out_path = contact.get("out_path", "")
-            contact["out_path_len"] = len(out_path)
 
             result = await self.mc.commands.add_contact(contact)
             if result.type == EventType.ERROR:
