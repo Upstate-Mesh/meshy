@@ -87,7 +87,9 @@ class Meshy:
                     logger.info(
                         f"Connecting to node via TCP {host}:{port} (attempt {attempt + 1})..."
                     )
-                    mc = await MeshCore.create_tcp(host, port)
+                    mc = await MeshCore.create_tcp(
+                        host, port, auto_reconnect=True, max_reconnect_attempts=10
+                    )
                 else:
                     logger.info(
                         f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
@@ -335,6 +337,10 @@ class Meshy:
         result = await self.mc.commands.send_advert(flood=flood)
         if result.type != EventType.ERROR:
             logger.info(f"-> Advert sent ({'flood' if flood else 'direct'})")
+        elif result.payload.get("reason") == "no_event_received":
+            logger.info(
+                f"-> Advert sent ({'flood' if flood else 'direct'}) (no ack, expected over TCP)"
+            )
         else:
             logger.warning(f"Advert failed: {result.payload}")
 
