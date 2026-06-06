@@ -1,12 +1,11 @@
 import sqlite3
 from datetime import UTC, datetime
 
+from loguru import logger
+
 
 def _now():
     return datetime.now(UTC).isoformat()
-
-
-from loguru import logger
 
 
 class NodeDB:

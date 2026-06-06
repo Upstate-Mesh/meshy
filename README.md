@@ -6,6 +6,7 @@ Also has support for commands which respond to DMs with a string or a function c
 
 ## Release Notes
 
+- **2026-06-06:** Added NY 511 traffic and road alert integration as a scheduled channel worker, with configurable API key, area filter, and message prefix.
 - **2026-05-30:** Added ADSB aircraft tracking as a DM command and scheduled channel worker. Added support for connecting to MeshCore nodes via TCP as an alternative to serial, and pinned all dependency versions.
 - **2026-05-01:** Support for Nixle municipal alerts, amateur radio HF band conditions. Resolved bugs involving message length, added experimental message throttling queue to allow subsequent messages to deliver correctly.
 - **2026-04-24:** Seen DB now keeps track of lat/long. Experimental ADSB reporting via dump1090.
