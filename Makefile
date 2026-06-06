@@ -1,9 +1,9 @@
 PYTHON = ~/py_envs/bin/python
 BIN    = ~/py_envs/bin
 
-.PHONY: run format deps test
+.PHONY: run format setup test
 
-deps:
+setup:
 	@if [ ! -d ~/py_envs ]; then python3 -m venv ~/py_envs; fi
 	$(PYTHON) -m pip install -r requirements.txt
 
