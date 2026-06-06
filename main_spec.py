@@ -11,6 +11,7 @@ from adsb import (
 from db import NodeDB
 from hf import HfService, _format
 from nixle import NixleService
+from ny511 import Ny511Service
 from utils import MAX_MSG_BYTES, SPLIT_OVERHEAD, node_label, split_message
 
 NIXLE_HTML = """
@@ -460,7 +461,7 @@ def test_get_alerts_no_wire_returns_empty():
     with patch(
         "nixle.requests.get", return_value=_mock_nixle("<html><body></body></html>")
     ):
-        assert service.get_alerts() == []
+        assert not service.get_alerts()
 
 
 def test_get_alerts_skips_items_without_nixle_link():
@@ -558,8 +559,6 @@ def test_hf_day_excludes_night_bands():
 
 
 # --- Cooldown tests ---
-
-
 def _make_meshy_stub():
     """Minimal Meshy-like object for testing _check_and_update_cooldown."""
     from main import Meshy
@@ -634,3 +633,121 @@ def test_cooldown_records_timestamp():
     after = datetime.now(UTC)
     recorded = m._channel_cooldowns[("#adsb", ".seen")]
     assert before <= recorded <= after
+
+
+# --- NY 511 tests ---
+
+NY511_JSON = [
+    {
+        "Id": "alert-001",
+        "Message": "I-90 westbound closed at Exit 24",
+        "Notes": "",
+        "AreaNames": ["Albany", "Schenectady"],
+    },
+    {
+        "Id": "alert-002",
+        "Message": "Route 9 lane restriction near Troy",
+        "Notes": "",
+        "AreaNames": ["Rensselaer"],
+    },
+    {
+        "Id": "alert-003",
+        "Message": "Bridge inspection on I-787",
+        "Notes": "",
+        "AreaNames": ["Albany"],
+    },
+]
+
+
+def _mock_ny511(data=None):
+    mock = MagicMock()
+    mock.json.return_value = NY511_JSON if data is None else data
+    mock.raise_for_status = MagicMock()
+    return mock
+
+
+def _make_ny511(area="Albany", prefix="511 Alert:"):
+    return Ny511Service(
+        {"ny511": {"api_key": "testkey", "area": area, "prefix": prefix}}
+    )
+
+
+def test_ny511_get_alerts_filters_by_area():
+    service = _make_ny511(area="Albany")
+    with patch("ny511.requests.get", return_value=_mock_ny511()):
+        alerts = service.get_alerts()
+    ids = [a["id"] for a in alerts]
+    assert "alert-001" in ids
+    assert "alert-003" in ids
+    assert "alert-002" not in ids
+
+
+def test_ny511_get_alerts_area_filter_case_insensitive():
+    service = _make_ny511(area="albany")
+    with patch("ny511.requests.get", return_value=_mock_ny511()):
+        alerts = service.get_alerts()
+    assert len(alerts) == 2
+
+
+def test_ny511_get_alerts_no_area_filter_returns_all():
+    service = Ny511Service({"ny511": {"api_key": "testkey", "area": "", "prefix": ""}})
+    with patch("ny511.requests.get", return_value=_mock_ny511()):
+        alerts = service.get_alerts()
+    assert len(alerts) == 3
+
+
+def test_ny511_get_alerts_extracts_id_and_message():
+    service = _make_ny511()
+    with patch("ny511.requests.get", return_value=_mock_ny511()):
+        alerts = service.get_alerts()
+    assert alerts[0] == {
+        "id": "alert-001",
+        "message": "I-90 westbound closed at Exit 24",
+    }
+
+
+def test_ny511_get_alerts_no_api_key_returns_empty():
+    service = Ny511Service({"ny511": {"api_key": "", "area": "Albany", "prefix": ""}})
+    with patch("ny511.requests.get") as mock_get:
+        alerts = service.get_alerts()
+    mock_get.assert_not_called()
+    assert not alerts
+
+
+def test_ny511_get_alerts_skips_items_missing_id():
+    data = [{"Id": "", "Message": "Some message", "Notes": "", "AreaNames": ["Albany"]}]
+    service = _make_ny511()
+    with patch("ny511.requests.get", return_value=_mock_ny511(data)):
+        assert not service.get_alerts()
+
+
+def test_ny511_get_alerts_skips_items_missing_message():
+    data = [{"Id": "alert-x", "Message": "", "Notes": "", "AreaNames": ["Albany"]}]
+    service = _make_ny511()
+    with patch("ny511.requests.get", return_value=_mock_ny511(data)):
+        assert not service.get_alerts()
+
+
+def test_ny511_format_alert_with_prefix():
+    service = _make_ny511(prefix="511 Alert:")
+    alert = {"id": "alert-001", "message": "I-90 westbound closed at Exit 24"}
+    assert service.format_alert(alert) == "511 Alert: I-90 westbound closed at Exit 24"
+
+
+def test_ny511_format_alert_without_prefix():
+    service = Ny511Service({"ny511": {"api_key": "testkey", "area": "", "prefix": ""}})
+    alert = {"id": "alert-001", "message": "I-90 westbound closed at Exit 24"}
+    assert service.format_alert(alert) == "I-90 westbound closed at Exit 24"
+
+
+def test_ny511_alert_ids_namespaced_in_db(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    assert db.upsert_alert("ny511:alert-001") is True
+    assert db.upsert_alert("ny511:alert-001") is False
+    assert db.upsert_alert("ny511:alert-002") is True
+
+
+def test_ny511_alert_ids_do_not_collide_with_nixle(tmp_path):
+    db = NodeDB(db_file=str(tmp_path / "test.db"))
+    db.upsert_alert("alert-001")
+    assert db.upsert_alert("ny511:alert-001") is True

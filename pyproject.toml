@@ -1,0 +1,2 @@
+[tool.yamlfix]
+exclude = [".venv"]

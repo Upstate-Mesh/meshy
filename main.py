@@ -12,6 +12,7 @@ from adsb import AdsbService
 from db import NodeDB
 from hf import HfService
 from nixle import NixleService
+from ny511 import Ny511Service
 from scheduled_worker import ScheduledWorker
 from utils import node_label, split_message
 from weather import WeatherService
@@ -35,6 +36,7 @@ class Meshy:
         self.weather = WeatherService(self.config)
         self.adsb = AdsbService(self.config)
         self.nixle = NixleService(self.config)
+        self.ny511 = Ny511Service(self.config)
         self.hf = HfService()
 
         if self.config["save_node_db"]:
@@ -93,8 +95,9 @@ class Meshy:
                         host, port, auto_reconnect=True, max_reconnect_attempts=10
                     )
                 else:
+                    port = self.config["serial_port"]
                     logger.info(
-                        f"Connecting to node via '{self.config['serial_port']}' (attempt {attempt + 1})..."
+                        f"Connecting to node via '{port}' (attempt {attempt + 1})..."
                     )
                     mc = await MeshCore.create_serial(
                         self.config["serial_port"], baudrate=115200
@@ -143,7 +146,7 @@ class Meshy:
             reply_text = await self.handle_command(cmd)
 
             if reply_text is None:
-                logger.debug(f"<- Unrecognized command from {label} ({cmd}), ignoring.")
+                logger.debug(f"<- {label}: {cmd}")
                 return
 
             logger.info(f"<- from {label}: {cmd}")
@@ -248,7 +251,8 @@ class Meshy:
             )
             if channel_key is None:
                 logger.info(
-                    f"<- channel event: idx={channel_idx} not in channel_map {self.channel_map}, ignoring."
+                    f"<- channel event: idx={channel_idx} not in "
+                    f"channel_map {self.channel_map}, ignoring."
                 )
                 return
 
@@ -406,6 +410,16 @@ class Meshy:
                     await self._send_channel_message(job, msg)
         except requests.exceptions.RequestException as e:
             logger.info(f"Nixle request failed: {e}")
+
+    async def get_ny511_worker(self, job):
+        try:
+            alerts = await asyncio.to_thread(self.ny511.get_alerts)
+            for alert in alerts:
+                if self.db.upsert_alert(f"ny511:{alert['id']}"):
+                    msg = self.ny511.format_alert(alert)
+                    await self._send_channel_message(job, msg)
+        except requests.exceptions.RequestException as e:
+            logger.info(f"NY 511 request failed: {e}")
 
     async def get_aircraft_worker(self, job):
         try:

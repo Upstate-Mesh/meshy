@@ -34,7 +34,7 @@ def _climb_indicator(baro_rate):
 def _distance_bearing(home_lat, home_lon, lat, lon):
     home, point = (home_lat, home_lon), (lat, lon)
     distance = round(geodesic(home, point).miles, 1)
-    lat1, lon1 = math.radians(home_lat), math.radians(home_lon)
+    lat1, _lon1 = math.radians(home_lat), math.radians(home_lon)
     lat2, dlon = math.radians(lat), math.radians(lon - home_lon)
     y = math.sin(dlon) * math.cos(lat2)
     x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(

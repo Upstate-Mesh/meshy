@@ -16,6 +16,10 @@ weather:
     user_agent: (example.com, example@example.com)
 nixle:
   url: https://nixle.us/city/your-state/your-city/
+ny511:
+  api_key: your-511ny-api-key
+  area: Albany  # Only track alerts where AreaNames contains this value (case-insensitive)
+  prefix: '511 Alert:'  # Prepended to each message; leave empty to omit
 adsb:
   url: http://localhost:8080
   max_age_seconds: 60
@@ -30,12 +34,12 @@ bot:
     .aircraft: get_aircraft
     .alerts: get_alerts
     .conditions: get_weather_conditions
-    .forecast: get_weather_forecast
     .hf: get_hf_conditions
-    .help: 'Available commands: .about .aircraft .alerts .conditions .forecast .hf
-      .help .ping .seen'
+    .help: 'Available commands: .about .aircraft .alerts .conditions .hf .help .ping
+      .seen .wx'
     .ping: pong!
     .seen: get_seen_nodes
+    .wx: get_weather_forecast
 channel_commands:
   - channel: '#adsb'
     command: .aircraft
@@ -87,3 +91,8 @@ workers:
     channel: public
     cron: 0 */6 * * *
     dispatch: get_hf_worker
+  - type: ny511
+    active: false
+    channel: public
+    cron: 0 * * * *
+    dispatch: get_ny511_worker
